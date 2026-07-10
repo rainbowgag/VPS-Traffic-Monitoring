@@ -107,6 +107,8 @@ prompt_menu() {
   echo "3. Uninstall traffic monitor"
   echo
   read -r -p "Choose an option [1-3]: " choice
+  choice="$(printf '%s' "${choice}" | tr -cd '0-9')"
+  choice="${choice:-1}"
   case "${choice}" in
     1) ACTION="install" ;;
     2) ACTION="update" ;;
@@ -320,6 +322,21 @@ if [[ "${INTERACTIVE}" == "1" ]]; then
 fi
 
 case "${ACTION}" in
+  1)
+    ACTION="install"
+    check_linux_runtime
+    install_or_update "installed"
+    ;;
+  2)
+    ACTION="update"
+    check_linux_runtime
+    install_or_update "updated"
+    ;;
+  3)
+    ACTION="uninstall"
+    check_linux_runtime
+    uninstall_monitor
+    ;;
   install)
     check_linux_runtime
     install_or_update "installed"
