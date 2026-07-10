@@ -11,28 +11,66 @@
 - 支持自动统计主要公网网卡，也支持指定网卡
 - 使用 SQLite 保存增量数据，服务重启或 VPS 重启后不会丢失已统计流量
 - 不依赖 vnStat、Docker 或数据库服务
-- 提供 systemd 服务、安装脚本和卸载脚本
+- 提供 systemd 服务、交互式安装/更新/卸载脚本
 
-## 一键安装
+## 一键命令
 
-默认端口是 `8088`，默认每月 `1` 日重置：
+运行下面命令后，会弹出菜单：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh)
 ```
 
+菜单选项：
+
+```text
+1. Install traffic monitor
+2. Update traffic monitor
+3. Uninstall traffic monitor
+```
+
+选择 `1` 安装或 `2` 更新时，会继续让你输入：
+
+- Web 面板端口，直接回车默认 `8899`
+- 每月流量重置日期，直接回车默认 `1`
+- 统计网卡，直接回车自动识别主要网卡
+
 安装后打开：
 
 ```text
-http://你的VPS_IP:8088
+http://你的VPS_IP:端口
 ```
 
-## 指定端口和每月重置日
+如果端口直接回车，就是：
 
-例如使用 `8899` 端口，每月 `10` 日自动重置：
+```text
+http://你的VPS_IP:8899
+```
+
+## 非交互安装
+
+如果你想直接指定参数，也可以这样：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --port 8899 --reset-day 10
+bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --action install --port 8899 --reset-day 10
+```
+
+更新：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --action update --port 8899 --reset-day 10
+```
+
+卸载：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --action uninstall
+```
+
+彻底删除配置和数据库：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --action uninstall --purge
 ```
 
 ## 指定统计网卡
@@ -42,35 +80,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monit
 如果你的 VPS 网卡名是 `eth0`：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --interfaces eth0
+bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --action install --interfaces eth0
 ```
 
 多个网卡用英文逗号分隔：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --interfaces eth0,ens3
-```
-
-## 升级或重新配置
-
-重复运行安装命令即可。脚本会覆盖程序文件、更新配置并重启服务，但不会删除已有流量数据库。
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --port 8088 --reset-day 1
-```
-
-## 卸载
-
-默认卸载程序和 systemd 服务，但保留配置与流量数据库：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/uninstall.sh)
-```
-
-彻底删除配置和数据库：
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/uninstall.sh) --purge
+bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --action install --interfaces eth0,ens3
 ```
 
 ## 常用命令

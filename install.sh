@@ -7,30 +7,49 @@ INSTALL_DIR="/opt/${APP_NAME}"
 CONFIG_DIR="/etc/${APP_NAME}"
 DATA_DIR="/var/lib/${APP_NAME}"
 SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
-PORT="8088"
-RESET_DAY="1"
+DEFAULT_PORT="8899"
+DEFAULT_RESET_DAY="1"
+PORT="${DEFAULT_PORT}"
+RESET_DAY="${DEFAULT_RESET_DAY}"
 INTERFACES=""
+ACTION=""
+PURGE="0"
+INTERACTIVE="1"
 
 usage() {
   cat <<EOF
 Usage: bash install.sh [options]
 
+Without options, this script opens an interactive menu:
+  1. Install traffic monitor
+  2. Update traffic monitor
+  3. Uninstall traffic monitor
+
 Options:
-  --port PORT              Web panel port, default: 8088
-  --reset-day DAY          Monthly reset day 1-31, default: 1
+  --action install|update|uninstall
+  --port PORT              Web panel port, default: ${DEFAULT_PORT}
+  --reset-day DAY          Monthly reset day 1-31, default: ${DEFAULT_RESET_DAY}
   --interfaces LIST        Interfaces to count, for example eth0,ens3. Empty means auto.
+  --purge                  With uninstall, also remove config and traffic database
+  --yes                    Non-interactive mode, use provided/default values
   --help                   Show this help
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --action)
+      ACTION="${2:-}"; INTERACTIVE="0"; shift 2 ;;
     --port)
-      PORT="${2:-}"; shift 2 ;;
+      PORT="${2:-}"; INTERACTIVE="0"; shift 2 ;;
     --reset-day)
-      RESET_DAY="${2:-}"; shift 2 ;;
+      RESET_DAY="${2:-}"; INTERACTIVE="0"; shift 2 ;;
     --interfaces)
-      INTERFACES="${2:-}"; shift 2 ;;
+      INTERFACES="${2:-}"; INTERACTIVE="0"; shift 2 ;;
+    --purge)
+      PURGE="1"; INTERACTIVE="0"; shift ;;
+    --yes|-y)
+      INTERACTIVE="0"; shift ;;
     --help|-h)
       usage; exit 0 ;;
     *)
@@ -72,52 +91,89 @@ install_python_hint() {
   fi
 }
 
-need_root
-check_number "${PORT}" "port" 1 65535
-check_number "${RESET_DAY}" "reset day" 1 31
-
-if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "This installer only supports Linux VPS systems." >&2
-  exit 1
-fi
-
-if [[ ! -r /proc/net/dev ]]; then
-  echo "/proc/net/dev is not readable. Traffic counters are unavailable." >&2
-  exit 1
-fi
-
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required." >&2
-  install_python_hint
-  exit 1
-fi
-
-if ! command -v curl >/dev/null 2>&1; then
-  echo "curl is required." >&2
-  install_python_hint
-  exit 1
-fi
-
-require_cmd systemctl
-
-mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${DATA_DIR}"
-
-TMP_FILE="$(mktemp)"
-cleanup() {
-  rm -f "${TMP_FILE}"
+prompt_menu() {
+  echo
+  echo "VPS Traffic Monitoring"
+  echo "1. Install traffic monitor"
+  echo "2. Update traffic monitor"
+  echo "3. Uninstall traffic monitor"
+  echo
+  read -r -p "Choose an option [1-3]: " choice
+  case "${choice}" in
+    1) ACTION="install" ;;
+    2) ACTION="update" ;;
+    3) ACTION="uninstall" ;;
+    *) echo "Invalid option." >&2; exit 1 ;;
+  esac
 }
-trap cleanup EXIT
 
-if [[ -f "./monitor.py" ]]; then
-  cp "./monitor.py" "${TMP_FILE}"
-else
-  curl -fsSL "${REPO_RAW}/monitor.py" -o "${TMP_FILE}"
-fi
+prompt_install_config() {
+  local input=""
+  read -r -p "Web panel port [${DEFAULT_PORT}]: " input
+  PORT="${input:-${DEFAULT_PORT}}"
+  read -r -p "Monthly reset day 1-31 [${DEFAULT_RESET_DAY}]: " input
+  RESET_DAY="${input:-${DEFAULT_RESET_DAY}}"
+  read -r -p "Interfaces to count, for example eth0,ens3. Press Enter for auto: " input
+  INTERFACES="${input:-__AUTO__}"
+}
 
-python3 -m py_compile "${TMP_FILE}"
-install -m 0755 "${TMP_FILE}" "${INSTALL_DIR}/monitor.py"
+prompt_uninstall_config() {
+  local input=""
+  read -r -p "Also remove config and traffic database? [y/N]: " input
+  case "${input}" in
+    y|Y|yes|YES) PURGE="1" ;;
+    *) PURGE="0" ;;
+  esac
+}
 
-python3 - "$CONFIG_DIR/config.json" "$PORT" "$RESET_DAY" "$INTERFACES" <<'PY'
+check_linux_runtime() {
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "This script only supports Linux VPS systems." >&2
+    exit 1
+  fi
+  require_cmd systemctl
+}
+
+install_or_update() {
+  local label="$1"
+  check_number "${PORT}" "port" 1 65535
+  check_number "${RESET_DAY}" "reset day" 1 31
+
+  if [[ ! -r /proc/net/dev ]]; then
+    echo "/proc/net/dev is not readable. Traffic counters are unavailable." >&2
+    exit 1
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required." >&2
+    install_python_hint
+    exit 1
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required." >&2
+    install_python_hint
+    exit 1
+  fi
+
+  mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${DATA_DIR}"
+
+  TMP_FILE="$(mktemp)"
+  cleanup() {
+    rm -f "${TMP_FILE}"
+  }
+  trap cleanup EXIT
+
+  if [[ -f "./monitor.py" ]]; then
+    cp "./monitor.py" "${TMP_FILE}"
+  else
+    curl -fsSL "${REPO_RAW}/monitor.py" -o "${TMP_FILE}"
+  fi
+
+  python3 -m py_compile "${TMP_FILE}"
+  install -m 0755 "${TMP_FILE}" "${INSTALL_DIR}/monitor.py"
+
+  python3 - "$CONFIG_DIR/config.json" "$PORT" "$RESET_DAY" "$INTERFACES" <<'PY'
 import json
 import os
 import sys
@@ -137,7 +193,9 @@ if os.path.exists(path):
         old = json.load(fh)
     old.update({"port": port, "reset_day": reset_day})
     config.update(old)
-if interfaces.strip():
+if interfaces.strip() == "__AUTO__":
+    config["interfaces"] = []
+elif interfaces.strip():
     config["interfaces"] = [x.strip() for x in interfaces.split(",") if x.strip()]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 tmp = f"{path}.tmp"
@@ -146,7 +204,7 @@ with open(tmp, "w", encoding="utf-8") as fh:
 os.replace(tmp, path)
 PY
 
-cat > "${SERVICE_FILE}" <<EOF
+  cat > "${SERVICE_FILE}" <<EOF
 [Unit]
 Description=VPS Traffic Monitoring
 After=network-online.target
@@ -164,25 +222,87 @@ WorkingDirectory=${INSTALL_DIR}
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable "${APP_NAME}" >/dev/null
-systemctl restart "${APP_NAME}"
+  systemctl daemon-reload
+  systemctl enable "${APP_NAME}" >/dev/null
+  systemctl restart "${APP_NAME}"
 
-sleep 1
-if ! systemctl is-active --quiet "${APP_NAME}"; then
-  systemctl status "${APP_NAME}" --no-pager || true
-  echo "Service failed to start." >&2
-  exit 1
+  sleep 1
+  if ! systemctl is-active --quiet "${APP_NAME}"; then
+    systemctl status "${APP_NAME}" --no-pager || true
+    echo "Service failed to start." >&2
+    exit 1
+  fi
+
+  PUBLIC_IP="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
+  echo
+  echo "VPS Traffic Monitoring ${label} successfully."
+  echo "Panel: http://${PUBLIC_IP:-YOUR_VPS_IP}:${PORT}"
+  echo "Config: ${CONFIG_DIR}/config.json"
+  echo "Data: ${DATA_DIR}/traffic.db"
+  echo
+  echo "Useful commands:"
+  echo "  systemctl status ${APP_NAME}"
+  echo "  journalctl -u ${APP_NAME} -f"
+  echo "  bash <(curl -fsSL ${REPO_RAW}/install.sh)"
+}
+
+uninstall_monitor() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop "${APP_NAME}" >/dev/null 2>&1 || true
+    systemctl disable "${APP_NAME}" >/dev/null 2>&1 || true
+  fi
+
+  rm -f "${SERVICE_FILE}"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    systemctl reset-failed "${APP_NAME}" >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "${INSTALL_DIR}"
+
+  if [[ "${PURGE}" == "1" ]]; then
+    rm -rf "${CONFIG_DIR}" "${DATA_DIR}"
+    echo "VPS Traffic Monitoring uninstalled. Config and data were removed."
+  else
+    echo "VPS Traffic Monitoring uninstalled. Config and data were kept:"
+    echo "  ${CONFIG_DIR}"
+    echo "  ${DATA_DIR}"
+  fi
+}
+
+need_root
+
+if [[ "${INTERACTIVE}" == "1" ]]; then
+  prompt_menu
+  if [[ "${ACTION}" == "install" || "${ACTION}" == "update" ]]; then
+    prompt_install_config
+  elif [[ "${ACTION}" == "uninstall" ]]; then
+    prompt_uninstall_config
+  fi
 fi
 
-PUBLIC_IP="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
-echo
-echo "VPS Traffic Monitoring installed successfully."
-echo "Panel: http://${PUBLIC_IP:-YOUR_VPS_IP}:${PORT}"
-echo "Config: ${CONFIG_DIR}/config.json"
-echo "Data: ${DATA_DIR}/traffic.db"
-echo
-echo "Useful commands:"
-echo "  systemctl status ${APP_NAME}"
-echo "  journalctl -u ${APP_NAME} -f"
-echo "  bash <(curl -fsSL ${REPO_RAW}/uninstall.sh)"
+case "${ACTION}" in
+  install)
+    check_linux_runtime
+    install_or_update "installed"
+    ;;
+  update)
+    check_linux_runtime
+    install_or_update "updated"
+    ;;
+  uninstall)
+    check_linux_runtime
+    uninstall_monitor
+    ;;
+  "")
+    echo "No action selected." >&2
+    usage
+    exit 1
+    ;;
+  *)
+    echo "Invalid action: ${ACTION}" >&2
+    usage
+    exit 1
+    ;;
+esac
