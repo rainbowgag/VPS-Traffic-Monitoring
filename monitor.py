@@ -93,7 +93,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="panel metric">
         <div class="label">本周期总流量</div>
         <div class="value" id="total">--</div>
-        <div class="hint" id="cycle">登录后查看重置周期</div>
+        <div class="hint" id="cycle"></div>
       </div>
       <div class="panel metric">
         <div class="label">上行流量</div>
@@ -182,7 +182,7 @@ INDEX_HTML = r"""<!doctype html>
         $('rx').textContent = fmt(data.cycle.rx_bytes);
         $('txRate').textContent = `当前上行 ${rate(data.rate.tx_bps)}`;
         $('rxRate').textContent = `当前下行 ${rate(data.rate.rx_bps)}`;
-        $('cycle').textContent = data.admin ? `${data.cycle.start_local} 至 ${data.cycle.next_reset_local}` : '登录后查看重置周期';
+        $('cycle').textContent = data.admin ? `${data.cycle.start_local} 至 ${data.cycle.next_reset_local}` : '';
         $('updated').textContent = `已更新 ${new Date(data.now * 1000).toLocaleTimeString()}`;
         if (data.admin) {
           $('interfaces').innerHTML = data.interfaces.map(row => `
