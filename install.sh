@@ -15,6 +15,7 @@ INTERFACES=""
 ACTION=""
 PURGE="0"
 INTERACTIVE="1"
+IMPORT_CURRENT="0"
 
 usage() {
   cat <<EOF
@@ -30,6 +31,7 @@ Options:
   --port PORT              Web panel port, default: ${DEFAULT_PORT}
   --reset-day DAY          Monthly reset day 1-31, default: ${DEFAULT_RESET_DAY}
   --interfaces LIST        Interfaces to count, for example eth0,ens3. Empty means auto.
+  --import-current         Import current interface counters into this cycle
   --purge                  With uninstall, also remove config and traffic database
   --yes                    Non-interactive mode, use provided/default values
   --help                   Show this help
@@ -46,6 +48,8 @@ while [[ $# -gt 0 ]]; do
       RESET_DAY="${2:-}"; INTERACTIVE="0"; shift 2 ;;
     --interfaces)
       INTERFACES="${2:-}"; INTERACTIVE="0"; shift 2 ;;
+    --import-current)
+      IMPORT_CURRENT="1"; INTERACTIVE="0"; shift ;;
     --purge)
       PURGE="1"; INTERACTIVE="0"; shift ;;
     --yes|-y)
@@ -115,6 +119,11 @@ prompt_install_config() {
   RESET_DAY="${input:-${DEFAULT_RESET_DAY}}"
   read -r -p "Interfaces to count, for example eth0,ens3. Press Enter for auto: " input
   INTERFACES="${input:-__AUTO__}"
+  read -r -p "Import current interface accumulated traffic? [y/N]: " input
+  case "${input}" in
+    y|Y|yes|YES) IMPORT_CURRENT="1" ;;
+    *) IMPORT_CURRENT="0" ;;
+  esac
 }
 
 prompt_uninstall_config() {
@@ -221,6 +230,13 @@ WorkingDirectory=${INSTALL_DIR}
 [Install]
 WantedBy=multi-user.target
 EOF
+
+  systemctl stop "${APP_NAME}" >/dev/null 2>&1 || true
+
+  if [[ "${IMPORT_CURRENT}" == "1" ]]; then
+    echo "Importing current interface counters..."
+    python3 "${INSTALL_DIR}/monitor.py" --config "${CONFIG_DIR}/config.json" --import-current
+  fi
 
   systemctl daemon-reload
   systemctl enable "${APP_NAME}" >/dev/null

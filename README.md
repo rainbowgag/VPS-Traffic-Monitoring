@@ -34,6 +34,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monit
 - Web 面板端口，直接回车默认 `8899`
 - 每月流量重置日期，直接回车默认 `1`
 - 统计网卡，直接回车自动识别主要网卡
+- 是否导入当前网卡已累计流量，直接回车默认不导入
 
 安装后打开：
 
@@ -53,6 +54,12 @@ http://你的VPS_IP:8899
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --action install --port 8899 --reset-day 10
+```
+
+如果要把当前网卡已经累计的流量导入本周期：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/rainbowgag/VPS-Traffic-Monitoring/main/install.sh) --action install --port 8899 --reset-day 10 --import-current
 ```
 
 更新：
@@ -119,5 +126,7 @@ systemctl restart vps-traffic-monitor
 - VPS 重启导致网卡计数器归零时，程序会检测到计数器回退，并从新的计数器继续累计
 - 到达设置的每月重置日时，程序会自动创建新的统计周期
 - 如果设置为每月 `31` 日，在没有 31 日的月份会自动使用当月最后一天
+- 如果安装时选择导入当前网卡已累计流量，程序会把当时 `/proc/net/dev` 的当前累计值加入本周期，并把它设置为后续采样基准，避免启动后重复计算
+- 如果当前周期已经有流量数据，再次选择导入会自动跳过，避免重复累加
 
 注意：如果服务长时间停止，停止期间产生的流量无法采样到。建议保持 systemd 服务常驻运行。

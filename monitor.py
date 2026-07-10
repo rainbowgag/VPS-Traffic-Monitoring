@@ -488,6 +488,40 @@ class Store:
                 placeholders = ",".join("?" for _ in names)
                 self.db.execute(f"DELETE FROM last_counters WHERE name NOT IN ({placeholders})", tuple(names))
 
+    def import_current_counters(self, counters: dict, reset_day: int, now: int) -> dict:
+        with self.lock, self.db:
+            cycle = self.active_cycle(reset_day, now)
+            cycle_id = cycle["id"]
+            existing = self.db.execute("""
+              SELECT COALESCE(SUM(rx_bytes + tx_bytes), 0) AS total
+              FROM interface_totals
+              WHERE cycle_id=?
+            """, (cycle_id,)).fetchone()["total"]
+            if existing:
+                return {"imported": False, "reason": "current cycle already has traffic data"}
+            for name, values in counters.items():
+                self.db.execute("""
+                  INSERT INTO interface_totals(cycle_id, name, rx_bytes, tx_bytes)
+                  VALUES(?, ?, ?, ?)
+                  ON CONFLICT(cycle_id, name) DO UPDATE SET
+                    rx_bytes=excluded.rx_bytes,
+                    tx_bytes=excluded.tx_bytes
+                """, (cycle_id, name, values["rx"], values["tx"]))
+                self.db.execute("""
+                  INSERT INTO last_counters(name, rx_counter, tx_counter, seen_ts)
+                  VALUES(?, ?, ?, ?)
+                  ON CONFLICT(name) DO UPDATE SET
+                    rx_counter=excluded.rx_counter,
+                    tx_counter=excluded.tx_counter,
+                    seen_ts=excluded.seen_ts
+                """, (name, values["rx"], values["tx"], now))
+            return {
+                "imported": True,
+                "interfaces": len(counters),
+                "rx_bytes": sum(v["rx"] for v in counters.values()),
+                "tx_bytes": sum(v["tx"] for v in counters.values()),
+            }
+
     def snapshot(self, reset_day: int, rates: dict) -> dict:
         now = utc_now()
         with self.lock:
@@ -667,12 +701,20 @@ def make_handler(config_path: str, store: Store, collector: Collector):
 def main() -> int:
     parser = argparse.ArgumentParser(description="VPS traffic monitoring web service")
     parser.add_argument("--config", default=DEFAULT_CONFIG)
+    parser.add_argument("--import-current", action="store_true", help="Import current /proc/net/dev counters into the active cycle and exit")
     args = parser.parse_args()
     if not os.path.exists("/proc/net/dev"):
         raise SystemExit("This service must run on Linux with /proc/net/dev")
     config = load_config(args.config)
     save_config(args.config, config)
     store = Store(config["database"])
+    if args.import_current:
+        try:
+            result = store.import_current_counters(read_net_dev(config), config["reset_day"], utc_now())
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+            return 0
+        finally:
+            store.close()
     collector = Collector(args.config, store)
     collector.start()
     handler = make_handler(args.config, store, collector)
