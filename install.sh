@@ -127,8 +127,7 @@ prompt_install_config() {
   INTERFACES="${input:-__AUTO__}"
   read -r -p "Admin username [admin]: " input
   ADMIN_USER="${input:-admin}"
-  read -r -s -p "Admin password (input is hidden; press Enter to keep existing or auto-generate): " input
-  echo
+  read -r -p "Admin password [press Enter to keep existing or auto-generate]: " input
   ADMIN_PASSWORD="${input:-}"
 }
 
@@ -171,6 +170,7 @@ install_or_update() {
     exit 1
   fi
 
+  echo "Preparing ${APP_NAME} ${label}..."
   mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}" "${DATA_DIR}"
 
   TMP_FILE="$(mktemp)"
@@ -188,6 +188,7 @@ install_or_update() {
   python3 -m py_compile "${TMP_FILE}"
   install -m 0755 "${TMP_FILE}" "${INSTALL_DIR}/monitor.py"
 
+  echo "Writing configuration..."
   python3 - "$CONFIG_DIR/config.json" "$PORT" "$RESET_DAY" "$INTERFACES" "$ADMIN_USER" "$ADMIN_PASSWORD" <<'PY'
 import base64
 import hashlib
@@ -261,6 +262,7 @@ EOF
 
   systemctl stop "${APP_NAME}" >/dev/null 2>&1 || true
 
+  echo "Restarting service..."
   systemctl daemon-reload
   systemctl enable "${APP_NAME}" >/dev/null
   systemctl restart "${APP_NAME}"
