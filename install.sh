@@ -127,7 +127,7 @@ prompt_install_config() {
   INTERFACES="${input:-__AUTO__}"
   read -r -p "Admin username [admin]: " input
   ADMIN_USER="${input:-admin}"
-  read -r -s -p "Admin password [keep existing or auto-generate]: " input
+  read -r -s -p "Admin password (input is hidden; press Enter to keep existing or auto-generate): " input
   echo
   ADMIN_PASSWORD="${input:-}"
 }
