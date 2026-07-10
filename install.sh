@@ -15,7 +15,8 @@ INTERFACES=""
 ACTION=""
 PURGE="0"
 INTERACTIVE="1"
-IMPORT_CURRENT="0"
+ADMIN_USER=""
+ADMIN_PASSWORD=""
 
 usage() {
   cat <<EOF
@@ -31,7 +32,8 @@ Options:
   --port PORT              Web panel port, default: ${DEFAULT_PORT}
   --reset-day DAY          Monthly reset day 1-31, default: ${DEFAULT_RESET_DAY}
   --interfaces LIST        Interfaces to count, for example eth0,ens3. Empty means auto.
-  --import-current         Import current interface counters into this cycle
+  --admin-user USER        Admin login username, default: admin
+  --admin-password PASS    Admin login password. Empty keeps existing or auto-generates on first install.
   --purge                  With uninstall, also remove config and traffic database
   --yes                    Non-interactive mode, use provided/default values
   --help                   Show this help
@@ -48,8 +50,10 @@ while [[ $# -gt 0 ]]; do
       RESET_DAY="${2:-}"; INTERACTIVE="0"; shift 2 ;;
     --interfaces)
       INTERFACES="${2:-}"; INTERACTIVE="0"; shift 2 ;;
-    --import-current)
-      IMPORT_CURRENT="1"; INTERACTIVE="0"; shift ;;
+    --admin-user)
+      ADMIN_USER="${2:-}"; INTERACTIVE="0"; shift 2 ;;
+    --admin-password)
+      ADMIN_PASSWORD="${2:-}"; INTERACTIVE="0"; shift 2 ;;
     --purge)
       PURGE="1"; INTERACTIVE="0"; shift ;;
     --yes|-y)
@@ -119,11 +123,11 @@ prompt_install_config() {
   RESET_DAY="${input:-${DEFAULT_RESET_DAY}}"
   read -r -p "Interfaces to count, for example eth0,ens3. Press Enter for auto: " input
   INTERFACES="${input:-__AUTO__}"
-  read -r -p "Import current interface accumulated traffic? [y/N]: " input
-  case "${input}" in
-    y|Y|yes|YES) IMPORT_CURRENT="1" ;;
-    *) IMPORT_CURRENT="0" ;;
-  esac
+  read -r -p "Admin username [admin]: " input
+  ADMIN_USER="${input:-admin}"
+  read -r -s -p "Admin password [keep existing or auto-generate]: " input
+  echo
+  ADMIN_PASSWORD="${input:-}"
 }
 
 prompt_uninstall_config() {
@@ -182,12 +186,21 @@ install_or_update() {
   python3 -m py_compile "${TMP_FILE}"
   install -m 0755 "${TMP_FILE}" "${INSTALL_DIR}/monitor.py"
 
-  python3 - "$CONFIG_DIR/config.json" "$PORT" "$RESET_DAY" "$INTERFACES" <<'PY'
+  python3 - "$CONFIG_DIR/config.json" "$PORT" "$RESET_DAY" "$INTERFACES" "$ADMIN_USER" "$ADMIN_PASSWORD" <<'PY'
+import base64
+import hashlib
 import json
 import os
+import secrets
 import sys
 
-path, port, reset_day, interfaces = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+path, port, reset_day, interfaces, admin_user, admin_password = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6]
+
+def hash_password(password, salt=None):
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000)
+    return "pbkdf2_sha256${}${}".format(salt, base64.b64encode(digest).decode("ascii"))
+
 config = {
     "host": "0.0.0.0",
     "port": port,
@@ -195,13 +208,26 @@ config = {
     "interfaces": [],
     "exclude_interfaces": ["lo", "docker*", "br-*", "veth*", "virbr*", "zt*", "tailscale*", "wg*"],
     "sample_interval": 5,
-    "database": "/var/lib/vps-traffic-monitor/traffic.db"
+    "database": "/var/lib/vps-traffic-monitor/traffic.db",
+    "admin_user": "admin",
+    "admin_password_hash": "",
+    "secret_key": secrets.token_hex(32)
 }
 if os.path.exists(path):
     with open(path, "r", encoding="utf-8") as fh:
         old = json.load(fh)
     old.update({"port": port, "reset_day": reset_day})
     config.update(old)
+if admin_user.strip():
+    config["admin_user"] = admin_user.strip()
+if admin_password:
+    config["admin_password_hash"] = hash_password(admin_password)
+elif not config.get("admin_password_hash"):
+    generated = secrets.token_urlsafe(12)
+    config["admin_password_hash"] = hash_password(generated)
+    print("Generated admin password: {}".format(generated))
+if not config.get("secret_key"):
+    config["secret_key"] = secrets.token_hex(32)
 if interfaces.strip() == "__AUTO__":
     config["interfaces"] = []
 elif interfaces.strip():
@@ -232,11 +258,6 @@ WantedBy=multi-user.target
 EOF
 
   systemctl stop "${APP_NAME}" >/dev/null 2>&1 || true
-
-  if [[ "${IMPORT_CURRENT}" == "1" ]]; then
-    echo "Importing current interface counters..."
-    python3 "${INSTALL_DIR}/monitor.py" --config "${CONFIG_DIR}/config.json" --import-current
-  fi
 
   systemctl daemon-reload
   systemctl enable "${APP_NAME}" >/dev/null

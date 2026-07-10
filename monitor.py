@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 import argparse
 import calendar
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import signal
 import sqlite3
 import threading
@@ -28,140 +32,36 @@ INDEX_HTML = r"""<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VPS Traffic Monitoring</title>
   <style>
-    :root {
-      color-scheme: light dark;
-      --bg: #f5f7fb;
-      --panel: #ffffff;
-      --text: #172033;
-      --muted: #627089;
-      --line: #d9e0eb;
-      --accent: #0f8b8d;
-      --accent-2: #c5532d;
-      --good: #16845b;
-      --shadow: 0 12px 28px rgba(20, 33, 55, .09);
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #10141d;
-        --panel: #171d29;
-        --text: #edf2f7;
-        --muted: #9ba8bc;
-        --line: #2b3445;
-        --accent: #34b6b8;
-        --accent-2: #e0714a;
-        --good: #55c796;
-        --shadow: none;
-      }
-    }
+    :root { color-scheme: dark light; --bg:#10141d; --panel:#171d29; --text:#edf2f7; --muted:#9fb0ca; --line:#2b3445; --accent:#34b6b8; --warn:#e0714a; --good:#55c796; }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background: var(--bg);
-      color: var(--text);
-      font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    header {
-      padding: 24px clamp(16px, 4vw, 42px) 14px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel);
-    }
-    .top {
-      display: flex;
-      gap: 16px;
-      align-items: flex-end;
-      justify-content: space-between;
-      max-width: 1180px;
-      margin: 0 auto;
-    }
-    h1 {
-      margin: 0;
-      font-size: clamp(24px, 3vw, 34px);
-      line-height: 1.1;
-      letter-spacing: 0;
-    }
-    .sub { color: var(--muted); margin-top: 8px; }
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 34px;
-      padding: 6px 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      color: var(--muted);
-      white-space: nowrap;
-    }
-    .dot {
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      background: var(--good);
-      box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 22%, transparent);
-    }
-    main {
-      width: min(1180px, calc(100% - 32px));
-      margin: 22px auto 40px;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      box-shadow: var(--shadow);
-    }
-    .metric { padding: 18px; min-height: 136px; }
-    .label { color: var(--muted); font-size: 13px; }
-    .value {
-      margin-top: 8px;
-      font-size: clamp(28px, 4vw, 42px);
-      font-weight: 760;
-      line-height: 1;
-      letter-spacing: 0;
-      overflow-wrap: anywhere;
-    }
-    .hint { margin-top: 12px; color: var(--muted); }
-    .span2 { grid-column: span 2; }
-    .section { margin-top: 14px; padding: 18px; }
-    .section h2 { margin: 0 0 14px; font-size: 18px; letter-spacing: 0; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 11px 8px; border-bottom: 1px solid var(--line); text-align: left; }
-    th { color: var(--muted); font-weight: 600; }
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: end;
-    }
-    label { display: grid; gap: 6px; color: var(--muted); min-width: 120px; }
-    input, button {
-      height: 38px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--panel);
-      color: var(--text);
-      padding: 0 10px;
-      font: inherit;
-    }
-    button {
-      cursor: pointer;
-      background: var(--accent);
-      color: white;
-      border-color: transparent;
-      font-weight: 650;
-    }
-    button.secondary { background: transparent; color: var(--text); border-color: var(--line); }
-    .error { color: var(--accent-2); margin-top: 10px; min-height: 20px; }
-    @media (max-width: 780px) {
-      .top { align-items: flex-start; flex-direction: column; }
-      .grid { grid-template-columns: 1fr; }
-      .span2 { grid-column: auto; }
-      th:nth-child(4), td:nth-child(4) { display: none; }
-    }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    header { padding:24px clamp(16px,4vw,42px) 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+    .top { display:flex; gap:16px; align-items:flex-end; justify-content:space-between; max-width:1180px; margin:0 auto; }
+    h1 { margin:0; font-size:clamp(26px,4vw,44px); line-height:1.1; letter-spacing:0; }
+    h2 { margin:0 0 14px; font-size:20px; letter-spacing:0; }
+    .sub,.hint,.label { color:var(--muted); }
+    .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+    .status { display:inline-flex; align-items:center; gap:8px; min-height:34px; padding:6px 10px; border:1px solid var(--line); border-radius:8px; color:var(--muted); white-space:nowrap; }
+    .dot { width:9px; height:9px; border-radius:50%; background:var(--good); box-shadow:0 0 0 4px rgba(85,199,150,.18); }
+    main { width:min(1180px, calc(100% - 32px)); margin:22px auto 40px; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .metric { padding:18px; min-height:136px; }
+    .value { margin-top:8px; font-size:clamp(30px,4vw,44px); font-weight:760; line-height:1; letter-spacing:0; overflow-wrap:anywhere; }
+    .section { margin-top:14px; padding:18px; }
+    .span2 { grid-column:span 2; }
+    .locked,.hidden { display:none !important; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { padding:11px 8px; border-bottom:1px solid var(--line); text-align:left; }
+    th { color:var(--muted); font-weight:650; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+    label { display:grid; gap:6px; color:var(--muted); min-width:120px; }
+    input,select,button { height:38px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); padding:0 10px; font:inherit; }
+    button { cursor:pointer; background:var(--accent); color:#fff; border-color:transparent; font-weight:700; }
+    button.secondary { background:transparent; color:var(--text); border-color:var(--line); }
+    .message { color:var(--warn); margin-top:10px; min-height:20px; }
+    .login { margin-top:14px; padding:18px; }
+    @media (max-width:780px) { .top{align-items:flex-start; flex-direction:column;} .grid{grid-template-columns:1fr;} .span2{grid-column:auto;} th:nth-child(4),td:nth-child(4){display:none;} }
   </style>
 </head>
 <body>
@@ -169,18 +69,32 @@ INDEX_HTML = r"""<!doctype html>
     <div class="top">
       <div>
         <h1>VPS Traffic Monitoring</h1>
-        <div class="sub">按账单周期统计上行、下行和总流量</div>
+        <div class="sub">公开显示流量使用情况，登录后管理设置</div>
       </div>
-      <div class="status"><span class="dot"></span><span id="updated">连接中</span></div>
+      <div class="actions">
+        <div class="status"><span class="dot"></span><span id="updated">连接中</span></div>
+        <button id="loginToggle" class="secondary">登录</button>
+        <button id="logout" class="secondary hidden">退出</button>
+      </div>
     </div>
   </header>
 
   <main>
+    <section id="loginPanel" class="panel login hidden">
+      <h2>管理员登录</h2>
+      <div class="toolbar">
+        <label>用户名<input id="username" autocomplete="username" placeholder="admin"></label>
+        <label>密码<input id="password" type="password" autocomplete="current-password"></label>
+        <button id="login">登录</button>
+      </div>
+      <div class="message" id="loginMessage"></div>
+    </section>
+
     <section class="grid">
       <div class="panel metric">
         <div class="label">本周期总流量</div>
         <div class="value" id="total">--</div>
-        <div class="hint" id="cycle">--</div>
+        <div class="hint" id="cycle">登录后查看重置周期</div>
       </div>
       <div class="panel metric">
         <div class="label">上行流量</div>
@@ -198,29 +112,36 @@ INDEX_HTML = r"""<!doctype html>
       <div class="panel section span2">
         <h2>网卡明细</h2>
         <table>
-          <thead>
-            <tr><th>网卡</th><th>下行</th><th>上行</th><th>总计</th><th>当前速度</th></tr>
-          </thead>
+          <thead><tr><th>网卡</th><th>下行</th><th>上行</th><th>总计</th><th>当前速度</th></tr></thead>
           <tbody id="interfaces"></tbody>
         </table>
       </div>
-      <div class="panel section">
+
+      <div class="panel section admin-panel locked" id="settingsPanel">
         <h2>设置</h2>
         <div class="toolbar">
-          <label>每月重置日
-            <input id="resetDay" type="number" min="1" max="31">
-          </label>
-          <label>统计网卡
-            <input id="iface" placeholder="auto 或 eth0,ens3">
-          </label>
+          <label>每月重置日<input id="resetDay" type="number" min="1" max="31"></label>
+          <label>统计网卡<input id="iface" placeholder="auto 或 eth0,ens3"></label>
           <button id="save">保存</button>
           <button id="reset" class="secondary">手动重置</button>
         </div>
-        <div class="error" id="message"></div>
+        <div class="message" id="message"></div>
       </div>
     </section>
 
-    <section class="panel section">
+    <section class="panel section admin-panel locked" id="manualPanel">
+      <h2>手动录入已用流量</h2>
+      <div class="toolbar">
+        <label>已用下行<input id="manualRx" type="number" min="0" step="0.01" placeholder="0"></label>
+        <label>已用上行<input id="manualTx" type="number" min="0" step="0.01" placeholder="0"></label>
+        <label>单位<select id="manualUnit"><option>GB</option><option>MB</option><option>TB</option></select></label>
+        <button id="manualAdd">添加到本周期</button>
+      </div>
+      <div class="hint">适合已经使用了半个月后才安装监控的情况。这里录入的是额外已用量，系统会继续叠加后续真实采样。</div>
+      <div class="message" id="manualMessage"></div>
+    </section>
+
+    <section class="panel section admin-panel locked" id="historyPanel">
       <h2>历史周期</h2>
       <table>
         <thead><tr><th>开始</th><th>结束</th><th>下行</th><th>上行</th><th>总计</th></tr></thead>
@@ -232,7 +153,7 @@ INDEX_HTML = r"""<!doctype html>
   <script>
     const $ = id => document.getElementById(id);
     const fmt = bytes => {
-      const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+      const units = ['B','KB','MB','GB','TB','PB'];
       let v = Number(bytes || 0), i = 0;
       while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
       return `${v >= 100 || i === 0 ? v.toFixed(0) : v.toFixed(2)} ${units[i]}`;
@@ -240,47 +161,55 @@ INDEX_HTML = r"""<!doctype html>
     const rate = bps => `${fmt(bps)}/s`;
     const post = (url, body) => fetch(url, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type':'application/json'},
       body: JSON.stringify(body || {})
     }).then(async r => {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || '请求失败');
       return data;
     });
+    function setAdmin(admin) {
+      document.querySelectorAll('.admin-panel').forEach(el => el.classList.toggle('locked', !admin));
+      $('loginToggle').classList.toggle('hidden', admin);
+      $('logout').classList.toggle('hidden', !admin);
+      if (admin) $('loginPanel').classList.add('hidden');
+    }
     async function load() {
       try {
-        const data = await fetch('/api/status', {cache: 'no-store'}).then(r => r.json());
+        const data = await fetch('/api/status', {cache:'no-store'}).then(r => r.json());
+        setAdmin(Boolean(data.admin));
         $('total').textContent = fmt(data.cycle.total_bytes);
         $('tx').textContent = fmt(data.cycle.tx_bytes);
         $('rx').textContent = fmt(data.cycle.rx_bytes);
         $('txRate').textContent = `当前上行 ${rate(data.rate.tx_bps)}`;
         $('rxRate').textContent = `当前下行 ${rate(data.rate.rx_bps)}`;
-        $('cycle').textContent = `${data.cycle.start_local} 至 ${data.cycle.next_reset_local}`;
+        $('cycle').textContent = data.admin ? `${data.cycle.start_local} 至 ${data.cycle.next_reset_local}` : '登录后查看重置周期';
         $('updated').textContent = `已更新 ${new Date(data.now * 1000).toLocaleTimeString()}`;
-        $('resetDay').value = data.config.reset_day;
-        $('iface').value = data.config.interfaces.length ? data.config.interfaces.join(',') : 'auto';
         $('interfaces').innerHTML = data.interfaces.map(row => `
-          <tr>
-            <td>${row.name}</td>
-            <td>${fmt(row.rx_bytes)}</td>
-            <td>${fmt(row.tx_bytes)}</td>
-            <td>${fmt(row.rx_bytes + row.tx_bytes)}</td>
-            <td>${rate(row.rx_bps + row.tx_bps)}</td>
-          </tr>`).join('') || '<tr><td colspan="5">暂无网卡数据</td></tr>';
-        $('history').innerHTML = data.history.map(row => `
-          <tr>
-            <td>${row.start_local}</td>
-            <td>${row.end_local}</td>
-            <td>${fmt(row.rx_bytes)}</td>
-            <td>${fmt(row.tx_bytes)}</td>
-            <td>${fmt(row.total_bytes)}</td>
-          </tr>`).join('') || '<tr><td colspan="5">暂无历史周期</td></tr>';
-        $('message').textContent = '';
+          <tr><td>${row.name === 'manual' ? '手动录入' : row.name}</td><td>${fmt(row.rx_bytes)}</td><td>${fmt(row.tx_bytes)}</td><td>${fmt(row.rx_bytes + row.tx_bytes)}</td><td>${rate(row.rx_bps + row.tx_bps)}</td></tr>
+        `).join('') || '<tr><td colspan="5">暂无网卡数据</td></tr>';
+        if (data.admin) {
+          $('resetDay').value = data.config.reset_day;
+          $('iface').value = data.config.interfaces.length ? data.config.interfaces.join(',') : 'auto';
+          $('history').innerHTML = data.history.map(row => `
+            <tr><td>${row.start_local}</td><td>${row.end_local}</td><td>${fmt(row.rx_bytes)}</td><td>${fmt(row.tx_bytes)}</td><td>${fmt(row.total_bytes)}</td></tr>
+          `).join('') || '<tr><td colspan="5">暂无历史周期</td></tr>';
+        }
       } catch (err) {
         $('updated').textContent = '连接失败';
         $('message').textContent = err.message;
       }
     }
+    $('loginToggle').onclick = () => $('loginPanel').classList.toggle('hidden');
+    $('login').onclick = async () => {
+      try {
+        await post('/api/login', {username: $('username').value, password: $('password').value});
+        $('loginMessage').textContent = '';
+        $('password').value = '';
+        load();
+      } catch (err) { $('loginMessage').textContent = err.message; }
+    };
+    $('logout').onclick = async () => { await post('/api/logout', {}); load(); };
     $('save').onclick = async () => {
       const interfaces = $('iface').value.trim();
       try {
@@ -294,11 +223,17 @@ INDEX_HTML = r"""<!doctype html>
     };
     $('reset').onclick = async () => {
       if (!confirm('确定要从现在开始重新计算本周期流量吗？')) return;
+      try { await post('/api/reset', {}); $('message').textContent = '已重置'; load(); }
+      catch (err) { $('message').textContent = err.message; }
+    };
+    $('manualAdd').onclick = async () => {
       try {
-        await post('/api/reset', {});
-        $('message').textContent = '已重置';
+        await post('/api/manual-usage', {rx: $('manualRx').value, tx: $('manualTx').value, unit: $('manualUnit').value});
+        $('manualMessage').textContent = '已添加到本周期';
+        $('manualRx').value = '';
+        $('manualTx').value = '';
         load();
-      } catch (err) { $('message').textContent = err.message; }
+      } catch (err) { $('manualMessage').textContent = err.message; }
     };
     load();
     setInterval(load, 5000);
@@ -310,6 +245,44 @@ INDEX_HTML = r"""<!doctype html>
 
 def utc_now() -> int:
     return int(time.time())
+
+
+def hash_password(password: str, salt=None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000)
+    return f"pbkdf2_sha256${salt}${base64.b64encode(digest).decode('ascii')}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, salt, digest = stored.split("$", 2)
+    except ValueError:
+        return False
+    if scheme != "pbkdf2_sha256":
+        return False
+    return hmac.compare_digest(hash_password(password, salt), stored)
+
+
+def make_session(config: dict, username: str) -> str:
+    ts = str(utc_now())
+    payload = f"{username}:{ts}"
+    sig = hmac.new(config["secret_key"].encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
+
+
+def verify_session(config: dict, token: str) -> bool:
+    try:
+        username, ts_raw, sig = token.split(":", 2)
+        ts = int(ts_raw)
+    except (ValueError, AttributeError):
+        return False
+    if username != config.get("admin_user"):
+        return False
+    if utc_now() - ts > 86400:
+        return False
+    payload = f"{username}:{ts_raw}"
+    expected = hmac.new(config["secret_key"].encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected)
 
 
 def iso_local(ts: int) -> str:
@@ -344,6 +317,9 @@ def load_config(path: str) -> dict:
         "exclude_interfaces": ["lo", "docker*", "br-*", "veth*", "virbr*", "zt*", "tailscale*", "wg*"],
         "sample_interval": DEFAULT_INTERVAL,
         "database": DEFAULT_DB,
+        "admin_user": "admin",
+        "admin_password_hash": "",
+        "secret_key": "",
     }
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as fh:
@@ -352,6 +328,8 @@ def load_config(path: str) -> dict:
     defaults["reset_day"] = max(1, min(31, int(defaults.get("reset_day", 1))))
     defaults["port"] = int(defaults.get("port", DEFAULT_PORT))
     defaults["sample_interval"] = max(2, int(defaults.get("sample_interval", DEFAULT_INTERVAL)))
+    if not defaults.get("secret_key"):
+        defaults["secret_key"] = secrets.token_hex(32)
     return defaults
 
 
@@ -488,39 +466,21 @@ class Store:
                 placeholders = ",".join("?" for _ in names)
                 self.db.execute(f"DELETE FROM last_counters WHERE name NOT IN ({placeholders})", tuple(names))
 
-    def import_current_counters(self, counters: dict, reset_day: int, now: int) -> dict:
+    def add_manual_usage(self, reset_day: int, rx_bytes: int, tx_bytes: int) -> dict:
+        if rx_bytes < 0 or tx_bytes < 0:
+            raise ValueError("manual usage must not be negative")
         with self.lock, self.db:
+            now = utc_now()
             cycle = self.active_cycle(reset_day, now)
             cycle_id = cycle["id"]
-            existing = self.db.execute("""
-              SELECT COALESCE(SUM(rx_bytes + tx_bytes), 0) AS total
-              FROM interface_totals
-              WHERE cycle_id=?
-            """, (cycle_id,)).fetchone()["total"]
-            if existing:
-                return {"imported": False, "reason": "current cycle already has traffic data"}
-            for name, values in counters.items():
-                self.db.execute("""
-                  INSERT INTO interface_totals(cycle_id, name, rx_bytes, tx_bytes)
-                  VALUES(?, ?, ?, ?)
-                  ON CONFLICT(cycle_id, name) DO UPDATE SET
-                    rx_bytes=excluded.rx_bytes,
-                    tx_bytes=excluded.tx_bytes
-                """, (cycle_id, name, values["rx"], values["tx"]))
-                self.db.execute("""
-                  INSERT INTO last_counters(name, rx_counter, tx_counter, seen_ts)
-                  VALUES(?, ?, ?, ?)
-                  ON CONFLICT(name) DO UPDATE SET
-                    rx_counter=excluded.rx_counter,
-                    tx_counter=excluded.tx_counter,
-                    seen_ts=excluded.seen_ts
-                """, (name, values["rx"], values["tx"], now))
-            return {
-                "imported": True,
-                "interfaces": len(counters),
-                "rx_bytes": sum(v["rx"] for v in counters.values()),
-                "tx_bytes": sum(v["tx"] for v in counters.values()),
-            }
+            self.db.execute("""
+              INSERT INTO interface_totals(cycle_id, name, rx_bytes, tx_bytes)
+              VALUES(?, ?, ?, ?)
+              ON CONFLICT(cycle_id, name) DO UPDATE SET
+                rx_bytes = rx_bytes + excluded.rx_bytes,
+                tx_bytes = tx_bytes + excluded.tx_bytes
+            """, (cycle_id, "manual", rx_bytes, tx_bytes))
+            return {"ok": True, "rx_bytes": rx_bytes, "tx_bytes": tx_bytes}
 
     def snapshot(self, reset_day: int, rates: dict) -> dict:
         now = utc_now()
@@ -643,6 +603,23 @@ def make_handler(config_path: str, store: Store, collector: Collector):
                 return {}
             return json.loads(self.rfile.read(length).decode("utf-8"))
 
+        def cookie_value(self, name: str) -> str:
+            raw = self.headers.get("Cookie", "")
+            for part in raw.split(";"):
+                if "=" not in part:
+                    continue
+                key, value = part.strip().split("=", 1)
+                if key == name:
+                    return value
+            return ""
+
+        def is_admin(self, config: dict) -> bool:
+            return verify_session(config, self.cookie_value("vps_tm_session"))
+
+        def require_admin(self, config: dict) -> None:
+            if not self.is_admin(config):
+                raise PermissionError("login required")
+
         def do_GET(self):
             parsed = urlparse(self.path)
             if parsed.path == "/":
@@ -654,12 +631,20 @@ def make_handler(config_path: str, store: Store, collector: Collector):
                 self.wfile.write(body)
             elif parsed.path == "/api/status":
                 config = load_config(config_path)
+                admin = self.is_admin(config)
                 data = store.snapshot(config["reset_day"], collector.get_rates())
-                data["config"] = {
-                    "reset_day": config["reset_day"],
-                    "interfaces": config.get("interfaces") or [],
-                    "port": config["port"],
-                }
+                data["admin"] = admin
+                if admin:
+                    data["config"] = {
+                        "reset_day": config["reset_day"],
+                        "interfaces": config.get("interfaces") or [],
+                        "port": config["port"],
+                        "admin_user": config.get("admin_user", "admin"),
+                    }
+                else:
+                    data.pop("history", None)
+                    data["cycle"].pop("start_local", None)
+                    data["cycle"].pop("next_reset_local", None)
                 self.send_json(200, data)
             elif parsed.path == "/health":
                 self.send_json(200, {"ok": True})
@@ -671,7 +656,29 @@ def make_handler(config_path: str, store: Store, collector: Collector):
                 parsed = urlparse(self.path)
                 data = self.read_json()
                 config = load_config(config_path)
-                if parsed.path == "/api/config":
+                if parsed.path == "/api/login":
+                    username = str(data.get("username", ""))
+                    password = str(data.get("password", ""))
+                    if username != config.get("admin_user") or not verify_password(password, config.get("admin_password_hash", "")):
+                        raise PermissionError("invalid username or password")
+                    token = make_session(config, username)
+                    body = json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Set-Cookie", f"vps_tm_session={token}; Path=/; HttpOnly; SameSite=Lax")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif parsed.path == "/api/logout":
+                    body = json.dumps({"ok": True}, ensure_ascii=False).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Set-Cookie", "vps_tm_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif parsed.path == "/api/config":
+                    self.require_admin(config)
                     reset_day = int(data.get("reset_day", config["reset_day"]))
                     if reset_day < 1 or reset_day > 31:
                         raise ValueError("重置日必须在 1 到 31 之间")
@@ -685,12 +692,23 @@ def make_handler(config_path: str, store: Store, collector: Collector):
                     save_config(config_path, config)
                     self.send_json(200, {"ok": True})
                 elif parsed.path == "/api/reset":
+                    self.require_admin(config)
                     store.manual_reset(config["reset_day"])
                     self.send_json(200, {"ok": True})
+                elif parsed.path == "/api/manual-usage":
+                    self.require_admin(config)
+                    unit = str(data.get("unit", "GB")).upper()
+                    multiplier = {"MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}.get(unit)
+                    if not multiplier:
+                        raise ValueError("unit must be MB, GB, or TB")
+                    rx_bytes = int(float(data.get("rx", 0) or 0) * multiplier)
+                    tx_bytes = int(float(data.get("tx", 0) or 0) * multiplier)
+                    self.send_json(200, store.add_manual_usage(config["reset_day"], rx_bytes, tx_bytes))
                 else:
                     self.send_error(404)
             except Exception as exc:
-                self.send_json(400, {"error": str(exc)})
+                status = 403 if isinstance(exc, PermissionError) else 400
+                self.send_json(status, {"error": str(exc)})
 
         def log_message(self, fmt, *args):
             print(f"{self.address_string()} - {fmt % args}", flush=True)
@@ -701,20 +719,12 @@ def make_handler(config_path: str, store: Store, collector: Collector):
 def main() -> int:
     parser = argparse.ArgumentParser(description="VPS traffic monitoring web service")
     parser.add_argument("--config", default=DEFAULT_CONFIG)
-    parser.add_argument("--import-current", action="store_true", help="Import current /proc/net/dev counters into the active cycle and exit")
     args = parser.parse_args()
     if not os.path.exists("/proc/net/dev"):
         raise SystemExit("This service must run on Linux with /proc/net/dev")
     config = load_config(args.config)
     save_config(args.config, config)
     store = Store(config["database"])
-    if args.import_current:
-        try:
-            result = store.import_current_counters(read_net_dev(config), config["reset_day"], utc_now())
-            print(json.dumps(result, ensure_ascii=False), flush=True)
-            return 0
-        finally:
-            store.close()
     collector = Collector(args.config, store)
     collector.start()
     handler = make_handler(args.config, store, collector)
