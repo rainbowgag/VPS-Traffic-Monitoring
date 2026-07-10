@@ -109,7 +109,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
 
     <section class="grid">
-      <div class="panel section span2">
+      <div class="panel section span2 admin-panel locked" id="interfacesPanel">
         <h2>网卡明细</h2>
         <table>
           <thead><tr><th>网卡</th><th>下行</th><th>上行</th><th>总计</th><th>当前速度</th></tr></thead>
@@ -185,10 +185,10 @@ INDEX_HTML = r"""<!doctype html>
         $('rxRate').textContent = `当前下行 ${rate(data.rate.rx_bps)}`;
         $('cycle').textContent = data.admin ? `${data.cycle.start_local} 至 ${data.cycle.next_reset_local}` : '登录后查看重置周期';
         $('updated').textContent = `已更新 ${new Date(data.now * 1000).toLocaleTimeString()}`;
-        $('interfaces').innerHTML = data.interfaces.map(row => `
-          <tr><td>${row.name === 'manual' ? '手动录入' : row.name}</td><td>${fmt(row.rx_bytes)}</td><td>${fmt(row.tx_bytes)}</td><td>${fmt(row.rx_bytes + row.tx_bytes)}</td><td>${rate(row.rx_bps + row.tx_bps)}</td></tr>
-        `).join('') || '<tr><td colspan="5">暂无网卡数据</td></tr>';
         if (data.admin) {
+          $('interfaces').innerHTML = data.interfaces.map(row => `
+            <tr><td>${row.name === 'manual' ? '手动录入' : row.name}</td><td>${fmt(row.rx_bytes)}</td><td>${fmt(row.tx_bytes)}</td><td>${fmt(row.rx_bytes + row.tx_bytes)}</td><td>${rate(row.rx_bps + row.tx_bps)}</td></tr>
+          `).join('') || '<tr><td colspan="5">暂无网卡数据</td></tr>';
           $('resetDay').value = data.config.reset_day;
           $('iface').value = data.config.interfaces.length ? data.config.interfaces.join(',') : 'auto';
           $('history').innerHTML = data.history.map(row => `
@@ -643,6 +643,7 @@ def make_handler(config_path: str, store: Store, collector: Collector):
                     }
                 else:
                     data.pop("history", None)
+                    data["interfaces"] = []
                     data["cycle"].pop("start_local", None)
                     data["cycle"].pop("next_reset_local", None)
                 self.send_json(200, data)
