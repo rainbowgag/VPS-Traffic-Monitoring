@@ -69,7 +69,6 @@ INDEX_HTML = r"""<!doctype html>
     <div class="top">
       <div>
         <h1>VPS Traffic Monitoring</h1>
-        <div class="sub">公开显示流量使用情况，登录后管理设置</div>
       </div>
       <div class="actions">
         <div class="status"><span class="dot"></span><span id="updated">连接中</span></div>
