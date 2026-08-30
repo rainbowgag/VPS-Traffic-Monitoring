@@ -814,7 +814,7 @@ def main() -> int:
     def shutdown(signum, frame):
         collector.stop_event.set()
         reporter.stop_event.set()
-        httpd.shutdown()
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)

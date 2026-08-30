@@ -1135,10 +1135,10 @@ def main() -> int:
         recovery_email_enabled=config.get("recovery_email_enabled", True),
         dashboard_url=config.get("dashboard_url", ""),
     )
-    httpd = ThreadingHTTPServer((config["host"], config["port"]), make_handler(config, store))
+    httpd = ThreadingHTTPServer((config["host"], config["port"]), make_handler(args.config, store))
 
     def shutdown(signum, frame):
-        httpd.shutdown()
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
