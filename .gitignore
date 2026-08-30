@@ -6,3 +6,4 @@ venv/
 *.db
 *.sqlite
 *.log
+.vps_tm_repo/

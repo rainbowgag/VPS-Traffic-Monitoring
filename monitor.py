@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import signal
+import socket
 import sqlite3
 import threading
 import time
@@ -16,6 +17,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+import urllib.error
+import urllib.request
 
 APP_NAME = "vps-traffic-monitor"
 DEFAULT_CONFIG = "/etc/vps-traffic-monitor/config.json"
@@ -316,6 +319,9 @@ def load_config(path: str) -> dict:
         "exclude_interfaces": ["lo", "docker*", "br-*", "veth*", "virbr*", "zt*", "tailscale*", "wg*"],
         "sample_interval": DEFAULT_INTERVAL,
         "database": DEFAULT_DB,
+        "hub_url": "",
+        "agent_token": "",
+        "report_interval": 60,
         "admin_user": "admin",
         "admin_password_hash": "",
         "secret_key": "",
@@ -365,6 +371,79 @@ def read_net_dev(config: dict) -> dict:
                 continue
             result[name] = {"rx": int(fields[0]), "tx": int(fields[8])}
     return result
+
+
+def tz_offset_minutes() -> int:
+    """本机时区相对 UTC 的分钟偏移，用于每日切分默认值。"""
+    try:
+        offset = datetime.now().astimezone().utcoffset()
+        if offset is not None:
+            return int(offset.total_seconds() // 60)
+    except Exception:
+        pass
+    return -(time.timezone // 60) if getattr(time, "timezone", 0) else 0
+
+
+def build_report(config: dict, snapshot: dict) -> dict:
+    """由配置与 snapshot 组装上报 payload。纯函数，便于测试。"""
+    return {
+        "token": config.get("agent_token", ""),
+        "hostname": socket.gethostname(),
+        "ts": snapshot.get("now", utc_now()),
+        "tz_offset_minutes": tz_offset_minutes(),
+        "reset_day": int(config.get("reset_day", 1)),
+        "cycle": {
+            "start_ts": snapshot["cycle"]["start_ts"],
+            "rx_bytes": snapshot["cycle"]["rx_bytes"],
+            "tx_bytes": snapshot["cycle"]["tx_bytes"],
+        },
+        "interfaces": [
+            {"name": item["name"], "rx_bytes": item["rx_bytes"], "tx_bytes": item["tx_bytes"]}
+            for item in snapshot.get("interfaces", [])
+        ],
+        "rates": {
+            "rx_bps": snapshot["rate"]["rx_bps"],
+            "tx_bps": snapshot["rate"]["tx_bps"],
+        },
+    }
+
+
+class Reporter(threading.Thread):
+    """周期向 Hub 推送本周期累计流量；未配置 hub_url 时只休眠不发送。"""
+
+    def __init__(self, config_path: str, store, collector):
+        super().__init__(daemon=True)
+        self.config_path = config_path
+        self.store = store
+        self.collector = collector
+        self.stop_event = threading.Event()
+
+    def _post(self, url: str, payload: dict) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+
+    def run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                config = load_config(self.config_path)
+                hub_url = str(config.get("hub_url") or "").strip()
+                token = str(config.get("agent_token") or "").strip()
+                interval = max(10, int(config.get("report_interval", 60)))
+                if hub_url and token:
+                    snapshot = self.store.snapshot(config["reset_day"], self.collector.get_rates())
+                    self._post(hub_url.rstrip("/") + "/api/report", build_report(config, snapshot))
+                else:
+                    interval = 60
+            except Exception as exc:
+                print(f"{APP_NAME}: reporter error: {exc}", flush=True)
+            self.stop_event.wait(interval)
 
 
 class Store:
@@ -727,17 +806,21 @@ def main() -> int:
     store = Store(config["database"])
     collector = Collector(args.config, store)
     collector.start()
+    reporter = Reporter(args.config, store, collector)
+    reporter.start()
     handler = make_handler(args.config, store, collector)
     httpd = ThreadingHTTPServer((config["host"], config["port"]), handler)
 
     def shutdown(signum, frame):
         collector.stop_event.set()
+        reporter.stop_event.set()
         httpd.shutdown()
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     print(f"{APP_NAME}: listening on {config['host']}:{config['port']}", flush=True)
     httpd.serve_forever()
+    reporter.join(timeout=5)
     collector.join(timeout=5)
     return 0
 
