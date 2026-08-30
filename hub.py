@@ -150,6 +150,7 @@ DASHBOARD_HTML = """<!doctype html>
         <h2>安装命令</h2>
         <div class="sub">添加 VPS 后，把下面命令复制到被控 VPS 上以 root 执行即可。</div>
         <div class="cmd" id="installCmd">添加 VPS 后生成安装命令</div>
+        <div style="margin-top:8px;"><button id="copyCmd" class="secondary">复制命令</button> <span class="sub" id="copyMsg"></span></div>
       </div>
 
       <div class="panel">
@@ -261,7 +262,11 @@ DASHBOARD_HTML = """<!doctype html>
         if (S.admin) { $('nodeAdmin').innerHTML = adminRows(S.nodes) || '<tr><td colspan="7">暂无节点</td></tr>'; fillSmtp(); }
       } catch (e) { $('updated').textContent = '连接失败'; }
     }
-    function showCommand(cmd) { $('installCmd').textContent = cmd; }
+    function showCommand(cmd) { $('installCmd').textContent = cmd; $('copyMsg').textContent=''; }
+    $('copyCmd').onclick = async () => {
+      try { await navigator.clipboard.writeText($('installCmd').textContent); $('copyMsg').textContent = '已复制'; }
+      catch (e) { $('copyMsg').textContent = '复制失败，请手动全选复制'; }
+    };
     function resetNodeForm() {
       S.editingId = null; $('nodeFormTitle').textContent = '添加 VPS'; $('nodeSave').textContent = '添加';
       $('nodeCancel').classList.add('hidden');
