@@ -59,6 +59,9 @@ DEFAULTS = {
     "dashboard_url": "",
     "hub_public_url": "",
     "check_interval": 300,
+    "offline_after_seconds": 300,
+    "email_subject_prefix": "[VPS流量监控]",
+    "email_footer_text": "",
 }
 
 DASHBOARD_HTML = """<!doctype html>
@@ -139,6 +142,7 @@ DASHBOARD_HTML = """<!doctype html>
         <h2 id="nodeFormTitle">添加 VPS</h2>
         <div class="form">
           <label>备注名称 *<input id="nName" placeholder="例如：香港VPS"></label>
+          <label>分组 / 标签<input id="nGroup" placeholder="可选，例如：香港"></label>
           <label>主机 / IP<input id="nHost" placeholder="可选"></label>
           <label>每月重置日<input id="nResetDay" type="number" min="1" max="31" value="1"></label>
           <label>流量阈值 GB（0=未启用）<input id="nThreshold" type="number" min="0" step="0.01" value="0"></label>
@@ -159,7 +163,7 @@ DASHBOARD_HTML = """<!doctype html>
       <div class="panel">
         <h2>节点管理</h2>
         <table>
-          <thead><tr><th>ID</th><th>备注名称</th><th>主机/IP</th><th>重置日</th><th>阈值(GB)</th><th>收件邮箱</th><th>操作</th></tr></thead>
+          <thead><tr><th>ID</th><th>备注名称</th><th>分组</th><th>主机/IP</th><th>重置日</th><th>阈值(GB)</th><th>收件邮箱</th><th>操作</th></tr></thead>
           <tbody id="nodeAdmin"></tbody>
         </table>
       </div>
@@ -176,6 +180,9 @@ DASHBOARD_HTML = """<!doctype html>
           <label>收件邮箱（逗号分隔）<input id="sTo"></label>
           <label>STARTTLS<input id="sStarttls" type="checkbox" checked style="height:20px;"></label>
           <label>SSL<input id="sSsl" type="checkbox" style="height:20px;"></label>
+          <label>邮件主题前缀<input id="sPrefix" placeholder="[VPS流量监控]"></label>
+          <label>邮件落款 / 备注<input id="sFooter" placeholder="可选"></label>
+          <label>离线告警分钟<input id="sOffline" type="number" min="1" value="300"></label>
           <button id="smtpSave">保存</button>
           <button id="smtpTest" class="secondary">发送测试邮件</button>
         </div>
@@ -188,8 +195,44 @@ DASHBOARD_HTML = """<!doctype html>
         <div style="margin-top:8px;"><button id="upgradeBtn">升级到最新版</button></div>
         <div class="message" id="upgradeMessage"></div>
       </div>
+
+      <div class="panel">
+        <h2>修改管理员密码</h2>
+        <div class="form" style="grid-template-columns:200px 200px auto;">
+          <label>当前密码<input id="pCurrent" type="password" autocomplete="current-password"></label>
+          <label>新密码<input id="pNew" type="password" autocomplete="new-password"></label>
+          <button id="passwordBtn">修改密码</button>
+        </div>
+        <div class="message" id="passwordMessage"></div>
+      </div>
+
+      <div class="panel">
+        <h2>流量明细（小时）</h2>
+        <div class="form" style="grid-template-columns:220px auto auto;">
+          <label>选择节点<select id="detailNode"></select></label>
+          <button id="detailLoad" class="secondary">查看小时明细</button>
+          <button id="csvDownload" class="secondary">导出 CSV（近 7 日）</button>
+        </div>
+        <div style="margin-top:10px; overflow:auto; max-height:360px;">
+          <table><thead><tr><th>小时</th><th>下行</th><th>上行</th><th>合计</th></tr></thead><tbody id="hourlyBody"></tbody></table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>HTTPS 反代配置</h2>
+        <div class="form" style="grid-template-columns:260px auto auto;">
+          <label>你的域名<input id="proxyDomain" placeholder="例如 monitor.example.com"></label>
+          <button id="genCaddy" class="secondary">生成 Caddy 配置</button>
+          <button id="copyProxy" class="secondary">复制配置</button>
+        </div>
+        <div class="cmd" id="proxyCmd" style="margin-top:10px;"></div>
+        <div class="sub">生成后请按下方说明安装对应反代软件并加载配置。</div>
+      </div>
     </section>
 
+    <div class="form" style="grid-template-columns:200px 1fr; margin-bottom:10px;">
+      <label>分组筛选<select id="groupFilter"><option value="">全部</option></select></label>
+    </div>
     <table>
       <thead><tr><th>节点</th><th>状态</th><th>当前速率</th><th>本周期已用</th><th>近 7 日合计</th><th>阈值 / 预测</th><th>近 7 日趋势</th></tr></thead>
       <tbody id="tbody"></tbody>
@@ -248,12 +291,15 @@ DASHBOARD_HTML = """<!doctype html>
         const ifaces = (n.interfaces||[]).map(i=>`${esc(i.name)}: ${fmt((i.rx_bytes||0)+(i.tx_bytes||0))}`).join(' / ');
         const total7 = daily.reduce((s,d)=>s+d.total_bytes,0);
         const rateTotal = (n.rate_rx_bps||0) + (n.rate_tx_bps||0);
-        return `<tr><td><strong>${esc(n.name)}</strong><div class="sub">${esc(n.host)}</div></td><td><span class="dot ${n.online?'on':'off'}"></span>${n.online?'在线':'离线'}</td><td>${fmt(rateTotal)}/s</td><td>${fmt(n.current_total_bytes)}</td><td>${fmt(total7)}</td><td>${predCell(n)}</td><td><div class="bars">${bars}</div><div class="iface">${ifaces||'—'}</div></td></tr>`;
+        const memPct = n.mem_total_bytes ? Math.round((n.mem_used_bytes||0)/n.mem_total_bytes*100) : 0;
+        const metricsLine = `CPU ${n.cpu_percent||0}% · 内存 ${memPct}% · 负载 ${n.load1||0}`;
+        const groupBadge = n.group ? `<span class="badge" style="background:rgba(52,182,184,.14);color:var(--accent)">${esc(n.group)}</span> ` : '';
+        return `<tr><td><strong>${esc(n.name)}</strong>${groupBadge}<div class="sub">${esc(n.host)}</div><div class="sub">${metricsLine}</div></td><td><span class="dot ${n.online?'on':'off'}"></span>${n.online?'在线':'离线'}</td><td>${fmt(rateTotal)}/s</td><td>${fmt(n.current_total_bytes)}</td><td>${fmt(total7)}</td><td>${predCell(n)}</td><td><div class="bars">${bars}</div><div class="iface">${ifaces||'—'}</div></td></tr>`;
       }).join('');
     }
     function adminRows(nodes) {
       return nodes.map(n => `<tr>
-        <td>${n.id}</td><td>${esc(n.name)}</td><td>${esc(n.host)}</td><td>${n.reset_day}</td><td>${gb(n.threshold_bytes)}</td><td>${esc(n.alert_email||'全局')}</td>
+        <td>${n.id}</td><td>${esc(n.name)}</td><td>${esc(n.group||'—')}</td><td>${esc(n.host)}</td><td>${n.reset_day}</td><td>${gb(n.threshold_bytes)}</td><td>${esc(n.alert_email||'全局')}</td>
         <td>
           <button class="secondary" onclick="editNode(${n.id})">编辑</button>
           <button class="secondary" onclick="showToken(${n.id})">安装命令</button>
@@ -261,7 +307,7 @@ DASHBOARD_HTML = """<!doctype html>
         </td></tr>`).join('');
     }
     function alertRows(alerts) {
-      return (alerts||[]).map(a=>`<tr><td>${timeFmt(a.ts)}</td><td>${esc(a.node_name)}</td><td>${a.status==='exceeded'?'已超限':(a.status==='recovered'?'已恢复':'预计超限')}</td><td>${fmt(a.predicted_total_bytes)}</td><td>${fmt(a.threshold_bytes)}</td><td>${a.days_left}</td><td>${esc(a.projected_exceed_day||'—')}</td></tr>`).join('');
+      return (alerts||[]).map(a=>`<tr><td>${timeFmt(a.ts)}</td><td>${esc(a.node_name)}</td><td>${a.status==='exceeded'?'已超限':(a.status==='recovered'?'已恢复':(a.status==='offline'?'离线':'预计超限'))}</td><td>${fmt(a.predicted_total_bytes)}</td><td>${fmt(a.threshold_bytes)}</td><td>${a.days_left}</td><td>${esc(a.projected_exceed_day||'—')}</td></tr>`).join('');
     }
     function fillSmtp() {
       $('sEnabled').checked = !!S.smtp.enabled;
@@ -272,16 +318,37 @@ DASHBOARD_HTML = """<!doctype html>
       $('sTo').value = (S.smtp.to_addrs || []).join(',');
       $('sStarttls').checked = !!S.smtp.use_starttls;
       $('sSsl').checked = !!S.smtp.use_ssl;
+      $('sPrefix').value = S.email_subject_prefix || '[VPS流量监控]';
+      $('sFooter').value = S.email_footer_text || '';
+      $('sOffline').value = S.offline_after_seconds || 300;
+    }
+    function renderPublic() {
+      const prev = $('groupFilter').value;
+      const groups = [...new Set(S.nodes.map(n=>n.group).filter(Boolean))].sort();
+      $('groupFilter').innerHTML = '<option value="">全部</option>' + groups.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('');
+      if ([...$('groupFilter').options].some(o=>o.value===prev)) $('groupFilter').value = prev;
+      const sel = $('groupFilter').value;
+      const filtered = sel ? S.nodes.filter(n=>(n.group||'')===sel) : S.nodes;
+      $('tbody').innerHTML = nodeRows(filtered) || '<tr><td colspan="7">暂无节点</td></tr>';
+    }
+    function fillDetailNodes() {
+      const prev = $('detailNode').value;
+      $('detailNode').innerHTML = S.nodes.map(n=>`<option value="${n.id}">${esc(n.name)}</option>`).join('');
+      if ([...$('detailNode').options].some(o=>o.value===prev)) $('detailNode').value = prev;
     }
     async function load() {
       try {
         const data = await api('/api/status');
         S.nodes = data.nodes || []; S.alerts = data.alerts || []; S.smtp = data.smtp || {};
+        S.email_subject_prefix = data.email_subject_prefix || '[VPS流量监控]';
+        S.email_footer_text = data.email_footer_text || '';
+        S.offline_after_seconds = data.offline_after_seconds || 300;
+        S.port = data.port || 8898;
         setAdmin(!!data.admin);
         $('updated').textContent = `已更新 ${new Date(data.now*1000).toLocaleTimeString()}`;
-        $('tbody').innerHTML = nodeRows(S.nodes) || '<tr><td colspan="7">暂无节点</td></tr>';
+        renderPublic();
         $('alerts').innerHTML = alertRows(S.alerts) || '<tr><td colspan="7">暂无告警</td></tr>';
-        if (S.admin) { $('nodeAdmin').innerHTML = adminRows(S.nodes) || '<tr><td colspan="7">暂无节点</td></tr>'; fillSmtp(); }
+        if (S.admin) { $('nodeAdmin').innerHTML = adminRows(S.nodes) || '<tr><td colspan="8">暂无节点</td></tr>'; fillSmtp(); fillDetailNodes(); }
       } catch (e) { $('updated').textContent = '连接失败'; }
     }
     function showCommand(cmd) { $('installCmd').textContent = cmd; $('copyMsg').textContent=''; }
@@ -292,12 +359,12 @@ DASHBOARD_HTML = """<!doctype html>
     function resetNodeForm() {
       S.editingId = null; $('nodeFormTitle').textContent = '添加 VPS'; $('nodeSave').textContent = '添加';
       $('nodeCancel').classList.add('hidden');
-      $('nName').value=''; $('nHost').value=''; $('nResetDay').value=1; $('nThreshold').value=0; $('nEmail').value='';
+      $('nName').value=''; $('nHost').value=''; $('nGroup').value=''; $('nResetDay').value=1; $('nThreshold').value=0; $('nEmail').value='';
     }
     window.editNode = id => {
       const n = S.nodes.find(x => x.id === id); if (!n) return;
       S.editingId = id; $('nodeFormTitle').textContent = `编辑节点 #${id}`; $('nodeSave').textContent = '保存修改'; $('nodeCancel').classList.remove('hidden');
-      $('nName').value=n.name||''; $('nHost').value=n.host||''; $('nResetDay').value=n.reset_day; $('nThreshold').value=gb(n.threshold_bytes); $('nEmail').value=n.alert_email||'';
+      $('nName').value=n.name||''; $('nHost').value=n.host||''; $('nGroup').value=n.group||''; $('nResetDay').value=n.reset_day; $('nThreshold').value=gb(n.threshold_bytes); $('nEmail').value=n.alert_email||'';
       $('nodeMessage').textContent='';
     };
     window.showToken = async id => {
@@ -315,7 +382,7 @@ DASHBOARD_HTML = """<!doctype html>
     };
     $('logout').onclick = async () => { await api('/api/logout', {}); load(); };
     $('nodeSave').onclick = async () => {
-      const body = { name:$('nName').value.trim(), host:$('nHost').value.trim(), reset_day:Number($('nResetDay').value), threshold_gb:Number($('nThreshold').value||0), email:$('nEmail').value.trim() };
+      const body = { name:$('nName').value.trim(), host:$('nHost').value.trim(), group:$('nGroup').value.trim(), reset_day:Number($('nResetDay').value), threshold_gb:Number($('nThreshold').value||0), email:$('nEmail').value.trim() };
       try {
         if (S.editingId) { await api(`/api/nodes/${S.editingId}/update`, body); $('nodeMessage').textContent='已保存'; }
         else { const r = await api('/api/nodes', body); showCommand(r.command); $('nodeMessage').textContent='已添加，安装命令见下方'; }
@@ -324,7 +391,7 @@ DASHBOARD_HTML = """<!doctype html>
     };
     $('nodeCancel').onclick = () => { resetNodeForm(); $('nodeMessage').textContent=''; };
     $('smtpSave').onclick = async () => {
-      try { await api('/api/smtp', { enabled:$('sEnabled').checked, host:$('sHost').value.trim(), port:Number($('sPort').value), username:$('sUsername').value.trim(), password:$('sPassword').value, from_addr:$('sFrom').value.trim(), to_addrs:$('sTo').value, use_ssl:$('sSsl').checked, use_starttls:$('sStarttls').checked }); $('smtpMessage').textContent='已保存'; $('sPassword').value=''; load(); }
+      try { await api('/api/smtp', { enabled:$('sEnabled').checked, host:$('sHost').value.trim(), port:Number($('sPort').value), username:$('sUsername').value.trim(), password:$('sPassword').value, from_addr:$('sFrom').value.trim(), to_addrs:$('sTo').value, use_ssl:$('sSsl').checked, use_starttls:$('sStarttls').checked, email_subject_prefix:$('sPrefix').value.trim(), email_footer_text:$('sFooter').value, offline_after_seconds:Number($('sOffline').value) }); $('smtpMessage').textContent='已保存'; $('sPassword').value=''; load(); }
       catch(e) { $('smtpMessage').textContent = e.message; }
     };
     $('smtpTest').onclick = async () => {
@@ -335,6 +402,33 @@ DASHBOARD_HTML = """<!doctype html>
       if (!confirm('确定要在线升级 Hub 吗？升级会自动重启服务。')) return;
       try { const r = await api('/api/upgrade', {}); $('upgradeMessage').textContent = r.message || '升级任务已启动'; }
       catch(e) { $('upgradeMessage').textContent = e.message; }
+    };
+    $('groupFilter').onchange = () => renderPublic();
+    $('passwordBtn').onclick = async () => {
+      try { await api('/api/password', { current_password:$('pCurrent').value, new_password:$('pNew').value }); $('passwordMessage').textContent='密码已修改'; $('pCurrent').value=''; $('pNew').value=''; }
+      catch(e) { $('passwordMessage').textContent = e.message; }
+    };
+    $('detailLoad').onclick = async () => {
+      const id = $('detailNode').value; if (!id) return;
+      try {
+        const r = await api(`/api/nodes/${id}/hourly`);
+        $('hourlyBody').innerHTML = (r.hours||[]).map(h=>`<tr><td>${esc(h.hour)}</td><td>${fmt(h.rx_bytes)}</td><td>${fmt(h.tx_bytes)}</td><td>${fmt(h.total_bytes)}</td></tr>`).join('') || '<tr><td colspan="4">暂无小时数据</td></tr>';
+      } catch(e) { alert(e.message); }
+    };
+    $('csvDownload').onclick = () => {
+      const id = $('detailNode').value; if (!id) return;
+      window.location = `/api/nodes/${id}/csv`;
+    };
+    $('genCaddy').onclick = () => {
+      const d = $('proxyDomain').value.trim();
+      if (!d) { alert('请先填写域名'); return; }
+      $('proxyCmd').textContent = `${d} {
+    reverse_proxy 127.0.0.1:${S.port}
+}`;
+    };
+    $('copyProxy').onclick = async () => {
+      try { await navigator.clipboard.writeText($('proxyCmd').textContent); }
+      catch(e) { alert('复制失败'); }
     };
     load(); setInterval(load, 5000);
   </script>
@@ -472,6 +566,12 @@ def node_local_day(ts: int, tz_offset_minutes: int) -> str:
     return datetime.fromtimestamp(ts, tz).strftime("%Y-%m-%d")
 
 
+def node_local_hour(ts: int, tz_offset_minutes: int) -> str:
+    """把 UTC 时间戳按节点时区切成 YYYY-MM-DD HH:00。"""
+    tz = timezone(timedelta(minutes=tz_offset_minutes))
+    return datetime.fromtimestamp(ts, tz).strftime("%Y-%m-%d %H:00")
+
+
 def next_reset_local(ts: int, reset_day: int, tz_offset_minutes: int) -> datetime:
     """节点本地时区下，下一个流量重置日的 00:00。"""
     tz = timezone(timedelta(minutes=tz_offset_minutes))
@@ -489,7 +589,9 @@ def next_reset_local(ts: int, reset_day: int, tz_offset_minutes: int) -> datetim
 
 class HubStore:
     def __init__(self, db_path: str, smtp_config: dict = None, alert_cooldown_hours: int = 24,
-                 recovery_email_enabled: bool = True, dashboard_url: str = ""):
+                 recovery_email_enabled: bool = True, dashboard_url: str = "",
+                 offline_after_seconds: int = 300, email_subject_prefix: str = "[VPS流量监控]",
+                 email_footer_text: str = ""):
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -499,6 +601,9 @@ class HubStore:
         self.alert_cooldown_hours = max(0, int(alert_cooldown_hours))
         self.recovery_email_enabled = bool(recovery_email_enabled)
         self.dashboard_url = str(dashboard_url or "")
+        self.offline_after_seconds = max(60, int(offline_after_seconds))
+        self.email_subject_prefix = str(email_subject_prefix or "[VPS流量监控]")
+        self.email_footer_text = str(email_footer_text or "")
         self._last_email = {}
         self.init_schema()
 
@@ -510,7 +615,7 @@ class HubStore:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
               );
-              INSERT INTO meta(key, value) VALUES('schema_version', '4')
+              INSERT INTO meta(key, value) VALUES('schema_version', '5')
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
               CREATE TABLE IF NOT EXISTS nodes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -550,6 +655,15 @@ class HubStore:
                 PRIMARY KEY(node_id, day)
               );
               CREATE INDEX IF NOT EXISTS idx_daily_usage_node_day ON daily_usage(node_id, day);
+              CREATE TABLE IF NOT EXISTS hourly_usage (
+                node_id INTEGER NOT NULL,
+                hour TEXT NOT NULL,
+                rx_bytes INTEGER NOT NULL DEFAULT 0,
+                tx_bytes INTEGER NOT NULL DEFAULT 0,
+                total_bytes INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(node_id, hour)
+              );
+              CREATE INDEX IF NOT EXISTS idx_hourly_usage_node_hour ON hourly_usage(node_id, hour);
               CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 node_id INTEGER NOT NULL,
@@ -567,6 +681,8 @@ class HubStore:
             cols = {row[1] for row in self.db.execute("PRAGMA table_info(nodes)")}
             if "token" not in cols:
                 self.db.execute("ALTER TABLE nodes ADD COLUMN token TEXT")
+            if "group" not in cols:
+                self.db.execute("ALTER TABLE nodes ADD COLUMN [group] TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         with self.lock:
@@ -574,7 +690,7 @@ class HubStore:
 
     def add_node(self, name: str, host: str = "", reset_day: int = 1,
                  threshold_bytes: int = 0, alert_email: str = "",
-                 tz_offset_minutes: int = 480) -> str:
+                 tz_offset_minutes: int = 480, group: str = "") -> str:
         """新建节点并返回明文 token（只此一次可见）。Hub 只保存 sha256。"""
         if not name or not name.strip():
             raise ValueError("节点名称不能为空")
@@ -585,14 +701,14 @@ class HubStore:
         with self.lock, self.db:
             self.db.execute("""
               INSERT INTO nodes(name, host, token, token_hash, reset_day, threshold_bytes,
-                                alert_email, tz_offset_minutes, created_ts, updated_ts)
-              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                alert_email, tz_offset_minutes, "group", created_ts, updated_ts)
+              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (name.strip(), host.strip(), token, hash_token(token), reset_day,
-                  threshold_bytes, alert_email.strip(), tz_offset_minutes, now, now))
+                  threshold_bytes, alert_email.strip(), tz_offset_minutes, group.strip(), now, now))
             return token
 
     def update_node(self, node_id: int, reset_day=None, threshold_bytes=None,
-                    alert_email=None, name=None, host=None) -> None:
+                    alert_email=None, name=None, host=None, group=None) -> None:
         node = self.get_node(node_id)
         if not node:
             raise ValueError("节点不存在")
@@ -601,18 +717,20 @@ class HubStore:
         alert_email = node["alert_email"] if alert_email is None else str(alert_email).strip()
         name = node["name"] if name is None else str(name).strip()
         host = node["host"] if host is None else str(host).strip()
+        group = node["group"] if group is None else str(group).strip()
         if not name:
             raise ValueError("节点名称不能为空")
         with self.lock, self.db:
             self.db.execute("""
-              UPDATE nodes SET name=?, host=?, reset_day=?, threshold_bytes=?, alert_email=?, updated_ts=?
+              UPDATE nodes SET name=?, host=?, reset_day=?, threshold_bytes=?, alert_email=?, "group"=?, updated_ts=?
               WHERE id=?
-            """, (name, host, reset_day, threshold_bytes, alert_email, utc_now(), node_id))
+            """, (name, host, reset_day, threshold_bytes, alert_email, group, utc_now(), node_id))
 
     def delete_node(self, node_id: int) -> None:
         with self.lock, self.db:
             self.db.execute("DELETE FROM samples WHERE node_id=?", (node_id,))
             self.db.execute("DELETE FROM daily_usage WHERE node_id=?", (node_id,))
+            self.db.execute("DELETE FROM hourly_usage WHERE node_id=?", (node_id,))
             self.db.execute("DELETE FROM alerts WHERE node_id=?", (node_id,))
             self.db.execute("DELETE FROM nodes WHERE id=?", (node_id,))
 
@@ -652,6 +770,25 @@ class HubStore:
                 "SELECT day, rx_bytes, tx_bytes, total_bytes FROM daily_usage "
                 "WHERE node_id=? ORDER BY day DESC LIMIT ?", (node_id, days)
             ).fetchall()
+
+    def hourly_usage(self, node_id: int, hours: int = 24):
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT hour, rx_bytes, tx_bytes, total_bytes FROM hourly_usage "
+                "WHERE node_id=? ORDER BY hour DESC LIMIT ?", (node_id, hours)
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def csv_export(self, node_id: int, days: int = 7) -> str:
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT hour, rx_bytes, tx_bytes, total_bytes FROM hourly_usage "
+                "WHERE node_id=? ORDER BY hour DESC LIMIT ?", (node_id, days * 24)
+            ).fetchall()
+        lines = ["hour,rx_bytes,tx_bytes,total_bytes"]
+        for row in reversed(rows):
+            lines.append(f"{row['hour']},{row['rx_bytes']},{row['tx_bytes']},{row['total_bytes']}")
+        return "\n".join(lines) + "\n"
 
     def latest_alert(self, node_id: int):
         with self.lock:
@@ -726,6 +863,15 @@ class HubStore:
                     tx_bytes = tx_bytes + excluded.tx_bytes,
                     total_bytes = total_bytes + excluded.total_bytes
                 """, (node["id"], day, delta_rx, delta_tx, delta_rx + delta_tx))
+                hour = node_local_hour(report_ts, tz_offset)
+                self.db.execute("""
+                  INSERT INTO hourly_usage(node_id, hour, rx_bytes, tx_bytes, total_bytes)
+                  VALUES(?, ?, ?, ?, ?)
+                  ON CONFLICT(node_id, hour) DO UPDATE SET
+                    rx_bytes = rx_bytes + excluded.rx_bytes,
+                    tx_bytes = tx_bytes + excluded.tx_bytes,
+                    total_bytes = total_bytes + excluded.total_bytes
+                """, (node["id"], hour, delta_rx, delta_tx, delta_rx + delta_tx))
 
         self.evaluate_node(node["id"])
         return {
@@ -847,11 +993,27 @@ class HubStore:
     def _current_total(self, node) -> int:
         return (node["last_rx_bytes"] or 0) + (node["last_tx_bytes"] or 0)
 
+    def _subject(self, text: str) -> str:
+        return f"{self.email_subject_prefix} {text}"
+
+    def _node_recipients(self, node):
+        raw = node["alert_email"] or ""
+        if not raw:
+            return None
+        return [x.strip() for x in raw.replace("，", ",").split(",") if x.strip()]
+
+    def _footer(self, body: str) -> str:
+        if self.email_footer_text:
+            body += f"{self.email_footer_text}\n"
+        if self.dashboard_url:
+            body += f"Dashboard：{self.dashboard_url}\n"
+        return body
+
     def _send_alert_email(self, alert: dict, node) -> None:
         if not self._cooldown_ok(alert["node_id"], alert["status"]):
             return
         status_text = "已超限" if alert["status"] == "exceeded" else "预计超限"
-        subject = f"[VPS流量监控] {node['name']} {status_text}提醒"
+        subject = self._subject(f"{node['name']} {status_text}提醒")
         body = (
             f"节点：{node['name']}（{node['host'] or '-'}）\n"
             f"状态：{status_text}\n"
@@ -862,12 +1024,10 @@ class HubStore:
             f"剩余天数：{alert['days_left']}\n"
             f"预计超限日：{alert['projected_exceed_day'] or '-'}\n"
         )
-        if self.dashboard_url:
-            body += f"Dashboard：{self.dashboard_url}\n"
-        self._send_email(subject, body, node["alert_email"] or None)
+        self._send_email(subject, self._footer(body), self._node_recipients(node))
 
     def _send_recovery_email(self, alert: dict, node) -> None:
-        subject = f"[VPS流量监控] {node['name']} 已恢复正常"
+        subject = self._subject(f"{node['name']} 已恢复正常")
         body = (
             f"节点：{node['name']}（{node['host'] or '-'}）\n"
             f"状态：已恢复\n"
@@ -875,9 +1035,36 @@ class HubStore:
             f"阈值：{format_bytes(alert['threshold_bytes'])}\n"
             f"剩余天数：{alert['days_left']}\n"
         )
-        if self.dashboard_url:
-            body += f"Dashboard：{self.dashboard_url}\n"
-        self._send_email(subject, body, node["alert_email"] or None)
+        self._send_email(subject, self._footer(body), self._node_recipients(node))
+
+    def _send_offline_email(self, node) -> None:
+        subject = self._subject(f"{node['name']} 已离线")
+        body = (
+            f"节点：{node['name']}（{node['host'] or '-'}）\n"
+            f"状态：离线（超过 {self.offline_after_seconds // 60} 分钟未上报）\n"
+        )
+        self._send_email(subject, self._footer(body), self._node_recipients(node))
+
+    def _send_offline_recovery_email(self, node) -> None:
+        subject = self._subject(f"{node['name']} 已恢复在线")
+        body = f"节点：{node['name']}（{node['host'] or '-'}）\n状态：已恢复在线\n"
+        self._send_email(subject, self._footer(body), self._node_recipients(node))
+
+    def evaluate_online(self) -> None:
+        now = utc_now()
+        for node in self.list_nodes():
+            last = node["last_seen_ts"]
+            online = bool(last) and (now - last <= self.offline_after_seconds)
+            latest = self.latest_alert(node["id"])
+            if not online:
+                if latest and latest["status"] == "offline":
+                    continue
+                self._insert_alert(node["id"], {}, "offline")
+                self._send_offline_email(node)
+            else:
+                if latest and latest["status"] == "offline" and self.recovery_email_enabled:
+                    self._insert_alert(node["id"], {}, "recovered")
+                    self._send_offline_recovery_email(node)
 
     def overview(self, admin: bool = False) -> dict:
         now = utc_now()
@@ -887,12 +1074,14 @@ class HubStore:
             daily.reverse()
             rates = {"rx_bps": 0, "tx_bps": 0}
             interfaces = []
+            metrics = {}
             latest = self.last_sample(node["id"])
             if latest and latest["raw_json"]:
                 try:
                     raw = json.loads(latest["raw_json"])
                     rates = raw.get("rates") or rates
                     interfaces = raw.get("interfaces") or []
+                    metrics = raw.get("metrics") or {}
                 except Exception:
                     pass
             last_seen = node["last_seen_ts"]
@@ -903,6 +1092,7 @@ class HubStore:
                 "id": node["id"],
                 "name": node["name"],
                 "host": node["host"],
+                "group": node["group"] or "",
                 "online": online,
                 "last_seen_ts": last_seen,
                 "reset_day": node["reset_day"],
@@ -912,6 +1102,10 @@ class HubStore:
                 "current_total_bytes": current_rx + current_tx,
                 "rate_rx_bps": rates.get("rx_bps", 0),
                 "rate_tx_bps": rates.get("tx_bps", 0),
+                "cpu_percent": metrics.get("cpu_percent", 0),
+                "mem_used_bytes": metrics.get("mem_used_bytes", 0),
+                "mem_total_bytes": metrics.get("mem_total_bytes", 0),
+                "load1": metrics.get("load1", 0),
                 "interfaces": interfaces,
                 "daily": daily,
                 "prediction": self.compute_prediction(node),
@@ -998,12 +1192,21 @@ def make_handler(config_path: str, store: HubStore):
                 smtp["password"] = str(data["password"])
             smtp["from_addr"] = str(data.get("from_addr", smtp.get("from_addr", ""))).strip()
             if data.get("to_addrs") is not None:
-                smtp["to_addrs"] = [x.strip() for x in str(data.get("to_addrs", "")).split(",") if x.strip()]
+                smtp["to_addrs"] = [x.strip() for x in str(data.get("to_addrs", "")).replace("，", ",").split(",") if x.strip()]
             smtp["use_ssl"] = bool(data.get("use_ssl", smtp.get("use_ssl", False)))
             smtp["use_starttls"] = bool(data.get("use_starttls", smtp.get("use_starttls", True)))
             config["smtp"] = smtp
+            if data.get("email_subject_prefix") is not None:
+                config["email_subject_prefix"] = str(data.get("email_subject_prefix")).strip() or "[VPS流量监控]"
+            if data.get("email_footer_text") is not None:
+                config["email_footer_text"] = str(data.get("email_footer_text"))
+            if data.get("offline_after_seconds") is not None:
+                config["offline_after_seconds"] = max(60, int(data.get("offline_after_seconds")))
             save_config(config_path, config)
             store.smtp_config = smtp
+            store.email_subject_prefix = config.get("email_subject_prefix", "[VPS流量监控]")
+            store.email_footer_text = config.get("email_footer_text", "")
+            store.offline_after_seconds = config.get("offline_after_seconds", 300)
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -1016,7 +1219,31 @@ def make_handler(config_path: str, store: HubStore):
                 if admin:
                     data["smtp"] = self.smtp_view()
                     data["hub_public_url"] = self.cfg().get("hub_public_url", "")
+                    data["port"] = self.cfg().get("port")
+                    data["offline_after_seconds"] = self.cfg().get("offline_after_seconds", 300)
+                    data["email_subject_prefix"] = self.cfg().get("email_subject_prefix", "[VPS流量监控]")
+                    data["email_footer_text"] = self.cfg().get("email_footer_text", "")
                 self.send_json(200, data)
+            elif parsed.path.startswith("/api/nodes/"):
+                if not self.is_admin():
+                    self.send_json(403, {"error": "login required"})
+                    return
+                match = re.fullmatch(r"/api/nodes/(\d+)/(hourly|csv)", parsed.path)
+                if not match:
+                    self.send_error(404)
+                    return
+                node_id = int(match.group(1))
+                kind = match.group(2)
+                if kind == "hourly":
+                    self.send_json(200, {"hours": store.hourly_usage(node_id, 24)})
+                else:
+                    csv_text = store.csv_export(node_id, 7).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", f'attachment; filename="node_{node_id}_traffic.csv"')
+                    self.send_header("Content-Length", str(len(csv_text)))
+                    self.end_headers()
+                    self.wfile.write(csv_text)
             elif parsed.path == "/":
                 body = DASHBOARD_HTML.encode("utf-8")
                 self.send_response(200)
@@ -1060,6 +1287,17 @@ def make_handler(config_path: str, store: HubStore):
                     self.require_admin()
                     self.save_smtp(config, data)
                     self.send_json(200, {"ok": True})
+                elif parsed.path == "/api/password":
+                    self.require_admin()
+                    current = str(data.get("current_password", ""))
+                    new_password = str(data.get("new_password", ""))
+                    if not verify_password(current, config.get("admin_password_hash", "")):
+                        raise PermissionError("当前密码错误")
+                    if len(new_password) < 6:
+                        raise ValueError("新密码至少 6 位")
+                    config["admin_password_hash"] = hash_password(new_password)
+                    save_config(config_path, config)
+                    self.send_json(200, {"ok": True})
                 elif parsed.path == "/api/test-email":
                     self.require_admin()
                     smtp = config.get("smtp") or {}
@@ -1080,6 +1318,7 @@ def make_handler(config_path: str, store: HubStore):
                         reset_day=int(data.get("reset_day", 1) or 1),
                         threshold_bytes=int(float(data.get("threshold_gb", 0) or 0) * (1024 ** 3)),
                         alert_email=str(data.get("email", "")).strip(),
+                        group=str(data.get("group", "")).strip(),
                     )
                     node = store.get_node_by_token(token)
                     self.send_json(200, {"ok": True, "node_id": node["id"], "token": token, "command": self.agent_command(token)})
@@ -1099,6 +1338,7 @@ def make_handler(config_path: str, store: HubStore):
                             reset_day=int(data.get("reset_day") or 1) if data.get("reset_day") is not None else None,
                             threshold_bytes=int(float(data.get("threshold_gb") or 0) * (1024 ** 3)) if data.get("threshold_gb") is not None else None,
                             alert_email=str(data.get("email", "")).strip(),
+                            group=str(data.get("group", "")).strip(),
                         )
                         self.send_json(200, {"ok": True})
                     elif action == "delete":
@@ -1181,10 +1421,26 @@ def main() -> int:
         alert_cooldown_hours=config.get("alert_cooldown_hours", 24),
         recovery_email_enabled=config.get("recovery_email_enabled", True),
         dashboard_url=config.get("dashboard_url", ""),
+        offline_after_seconds=config.get("offline_after_seconds", 300),
+        email_subject_prefix=config.get("email_subject_prefix", "[VPS流量监控]"),
+        email_footer_text=config.get("email_footer_text", ""),
     )
     httpd = ThreadingHTTPServer((config["host"], config["port"]), make_handler(args.config, store))
 
+    checker_stop = threading.Event()
+    def checker_loop():
+        interval = max(60, int(config.get("check_interval", 300)))
+        while not checker_stop.is_set():
+            try:
+                store.evaluate_online()
+            except Exception as exc:
+                print(f"{APP_NAME}: checker error: {exc}", flush=True)
+            checker_stop.wait(interval)
+    checker = threading.Thread(target=checker_loop, daemon=True)
+    checker.start()
+
     def shutdown(signum, frame):
+        checker_stop.set()
         threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, shutdown)

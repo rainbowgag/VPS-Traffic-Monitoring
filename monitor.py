@@ -384,9 +384,46 @@ def tz_offset_minutes() -> int:
     return -(time.timezone // 60) if getattr(time, "timezone", 0) else 0
 
 
-def build_report(config: dict, snapshot: dict) -> dict:
+def collect_metrics(prev_cpu=None):
+    """读取 CPU 使用率、内存、1 分钟负载。失败时返回 0 值。"""
+    metrics = {"cpu_percent": 0, "mem_used_bytes": 0, "mem_total_bytes": 0, "load1": 0.0}
+    cpu = prev_cpu
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8") as fh:
+            metrics["load1"] = float(fh.read().split()[0])
+    except Exception:
+        pass
+    try:
+        mem_total = mem_avail = None
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    mem_total = int(line.split()[1]) * 1024
+                elif line.startswith("MemAvailable:"):
+                    mem_avail = int(line.split()[1]) * 1024
+        if mem_total:
+            metrics["mem_total_bytes"] = mem_total
+            metrics["mem_used_bytes"] = max(0, mem_total - (mem_avail or 0))
+    except Exception:
+        pass
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as fh:
+            vals = [int(x) for x in fh.readline().split()[1:8]]
+        total = sum(vals)
+        idle = vals[3] + vals[4]
+        if cpu:
+            d_total = max(0, total - cpu[0])
+            d_idle = max(0, idle - cpu[1])
+            metrics["cpu_percent"] = round((d_total - d_idle) / d_total * 100, 1) if d_total > 0 else 0.0
+        cpu = (total, idle)
+    except Exception:
+        pass
+    return metrics, cpu
+
+
+def build_report(config: dict, snapshot: dict, metrics: dict = None) -> dict:
     """由配置与 snapshot 组装上报 payload。纯函数，便于测试。"""
-    return {
+    report = {
         "token": config.get("agent_token", ""),
         "hostname": socket.gethostname(),
         "ts": snapshot.get("now", utc_now()),
@@ -406,6 +443,9 @@ def build_report(config: dict, snapshot: dict) -> dict:
             "tx_bps": snapshot["rate"]["tx_bps"],
         },
     }
+    if metrics:
+        report["metrics"] = metrics
+    return report
 
 
 class Reporter(threading.Thread):
@@ -417,6 +457,7 @@ class Reporter(threading.Thread):
         self.store = store
         self.collector = collector
         self.stop_event = threading.Event()
+        self._prev_cpu = None
 
     def _post(self, url: str, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -438,7 +479,8 @@ class Reporter(threading.Thread):
                 interval = max(10, int(config.get("report_interval", 60)))
                 if hub_url and token:
                     snapshot = self.store.snapshot(config["reset_day"], self.collector.get_rates())
-                    self._post(hub_url.rstrip("/") + "/api/report", build_report(config, snapshot))
+                    metrics, self._prev_cpu = collect_metrics(self._prev_cpu)
+                    self._post(hub_url.rstrip("/") + "/api/report", build_report(config, snapshot, metrics))
                 else:
                     interval = 60
             except Exception as exc:
