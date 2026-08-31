@@ -20,6 +20,7 @@ import secrets
 import signal
 import smtplib
 import sqlite3
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -88,6 +89,8 @@ DASHBOARD_HTML = """<!doctype html>
     .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; }
     .badge.warn { background:rgba(224,113,74,.16); color:var(--warn); }
     .badge.ok { background:rgba(85,199,150,.16); color:var(--good); }
+    .blood { width:100%; max-width:230px; height:12px; background:#0b0e15; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-top:2px; }
+    .blood-fill { height:100%; width:0; transition:width .3s; }
     .bars { display:flex; gap:4px; align-items:flex-end; height:54px; min-width:220px; }
     .bar-col { display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; gap:3px; }
     .bar { width:14px; min-height:2px; background:var(--accent); border-radius:2px; }
@@ -178,10 +181,17 @@ DASHBOARD_HTML = """<!doctype html>
         </div>
         <div class="message" id="smtpMessage"></div>
       </div>
+
+      <div class="panel">
+        <h2>在线升级</h2>
+        <div class="sub">点击升级会从 GitHub 拉取最新代码并自动重启 Hub，配置与流量数据不会丢失。</div>
+        <div style="margin-top:8px;"><button id="upgradeBtn">升级到最新版</button></div>
+        <div class="message" id="upgradeMessage"></div>
+      </div>
     </section>
 
     <table>
-      <thead><tr><th>节点</th><th>状态</th><th>本周期已用</th><th>近 7 日合计</th><th>阈值 / 预测</th><th>近 7 日趋势</th></tr></thead>
+      <thead><tr><th>节点</th><th>状态</th><th>当前速率</th><th>本周期已用</th><th>近 7 日合计</th><th>阈值 / 预测</th><th>近 7 日趋势</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
 
@@ -213,11 +223,22 @@ DASHBOARD_HTML = """<!doctype html>
       $('logout').classList.toggle('hidden', !admin);
       if (admin) $('loginPanel').classList.add('hidden');
     }
+    function bloodBar(n) {
+      const th = n.threshold_bytes || 0;
+      if (!th) return '<div class="blood"><div class="blood-fill" style="width:0%;background:#3a4356"></div></div><div class="sub">未设置阈值</div>';
+      const ratio = Math.min(1, (n.current_total_bytes || 0) / th);
+      const pct = Math.round(ratio * 100);
+      let color = '#55c796';
+      if (ratio >= 0.95) color = '#e05a5a';
+      else if (ratio >= 0.85) color = '#e0883f';
+      else if (ratio >= 0.70) color = '#e0c341';
+      else if (ratio >= 0.50) color = '#9bdd6f';
+      return `<div class="blood"><div class="blood-fill" style="width:${Math.min(100,pct)}%;background:${color}"></div></div><div class="sub">${pct}% · ${fmt(n.current_total_bytes)} / ${fmt(th)}</div>`;
+    }
     function predCell(n) {
       const p = n.prediction;
-      if (!p) return '<span class="sub">未设置</span>';
-      const status = p.status === 'ok' ? '<span class="badge ok">正常</span>' : '<span class="badge warn">预计超限</span>';
-      return `${status} ${fmt(p.projected_total_bytes)} / ${fmt(p.threshold_bytes)}`;
+      const status = p ? (p.status === 'ok' ? '<span class="badge ok">正常</span>' : '<span class="badge warn">预计超限</span>') : '';
+      return `<div>${bloodBar(n)}</div><div>${status}${p ? ` 预计 ${fmt(p.projected_total_bytes)}` : ''}</div>`;
     }
     function nodeRows(nodes) {
       return nodes.map(n => {
@@ -226,7 +247,8 @@ DASHBOARD_HTML = """<!doctype html>
         const bars = daily.map(d=>`<div class="bar-col"><div class="bar" style="height:${(d.total_bytes/max*100).toFixed(0)}%" title="${esc(d.day)} ${fmt(d.total_bytes)}"></div><span>${esc(d.day.slice(5))}</span></div>`).join('');
         const ifaces = (n.interfaces||[]).map(i=>`${esc(i.name)}: ${fmt((i.rx_bytes||0)+(i.tx_bytes||0))}`).join(' / ');
         const total7 = daily.reduce((s,d)=>s+d.total_bytes,0);
-        return `<tr><td><strong>${esc(n.name)}</strong><div class="sub">${esc(n.host)}</div></td><td><span class="dot ${n.online?'on':'off'}"></span>${n.online?'在线':'离线'}</td><td>${fmt(n.current_total_bytes)}</td><td>${fmt(total7)}</td><td>${predCell(n)}</td><td><div class="bars">${bars}</div><div class="iface">${ifaces||'—'}</div></td></tr>`;
+        const rateTotal = (n.rate_rx_bps||0) + (n.rate_tx_bps||0);
+        return `<tr><td><strong>${esc(n.name)}</strong><div class="sub">${esc(n.host)}</div></td><td><span class="dot ${n.online?'on':'off'}"></span>${n.online?'在线':'离线'}</td><td>${fmt(rateTotal)}/s</td><td>${fmt(n.current_total_bytes)}</td><td>${fmt(total7)}</td><td>${predCell(n)}</td><td><div class="bars">${bars}</div><div class="iface">${ifaces||'—'}</div></td></tr>`;
       }).join('');
     }
     function adminRows(nodes) {
@@ -257,7 +279,7 @@ DASHBOARD_HTML = """<!doctype html>
         S.nodes = data.nodes || []; S.alerts = data.alerts || []; S.smtp = data.smtp || {};
         setAdmin(!!data.admin);
         $('updated').textContent = `已更新 ${new Date(data.now*1000).toLocaleTimeString()}`;
-        $('tbody').innerHTML = nodeRows(S.nodes) || '<tr><td colspan="6">暂无节点</td></tr>';
+        $('tbody').innerHTML = nodeRows(S.nodes) || '<tr><td colspan="7">暂无节点</td></tr>';
         $('alerts').innerHTML = alertRows(S.alerts) || '<tr><td colspan="7">暂无告警</td></tr>';
         if (S.admin) { $('nodeAdmin').innerHTML = adminRows(S.nodes) || '<tr><td colspan="7">暂无节点</td></tr>'; fillSmtp(); }
       } catch (e) { $('updated').textContent = '连接失败'; }
@@ -308,6 +330,11 @@ DASHBOARD_HTML = """<!doctype html>
     $('smtpTest').onclick = async () => {
       try { await api('/api/test-email', {}); $('smtpMessage').textContent='测试邮件已发送'; }
       catch(e) { $('smtpMessage').textContent = e.message; }
+    };
+    $('upgradeBtn').onclick = async () => {
+      if (!confirm('确定要在线升级 Hub 吗？升级会自动重启服务。')) return;
+      try { const r = await api('/api/upgrade', {}); $('upgradeMessage').textContent = r.message || '升级任务已启动'; }
+      catch(e) { $('upgradeMessage').textContent = e.message; }
     };
     load(); setInterval(load, 5000);
   </script>
@@ -426,6 +453,17 @@ def save_config(path: str, config: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(config, fh, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
+
+
+def trigger_upgrade() -> None:
+    """通过 systemd-run 在服务 cgroup 之外启动自更新任务，避免重启时被连带杀掉。"""
+    script = f"{REPO_RAW}/install.sh"
+    cmd = (
+        "systemd-run --no-block /bin/bash -c "
+        f"'curl -fsSL {script} -o /tmp/vps-traffic-monitor-install.sh "
+        "&& bash /tmp/vps-traffic-monitor-install.sh --action update --role hub'"
+    )
+    subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def node_local_day(ts: int, tz_offset_minutes: int) -> str:
@@ -868,6 +906,7 @@ class HubStore:
                 "online": online,
                 "last_seen_ts": last_seen,
                 "reset_day": node["reset_day"],
+                "threshold_bytes": node["threshold_bytes"],
                 "current_rx_bytes": current_rx,
                 "current_tx_bytes": current_tx,
                 "current_total_bytes": current_rx + current_tx,
@@ -879,7 +918,6 @@ class HubStore:
             }
             if admin:
                 item.update({
-                    "threshold_bytes": node["threshold_bytes"],
                     "alert_email": node["alert_email"],
                     "token": node["token"] or "",
                 })
@@ -1029,6 +1067,10 @@ def make_handler(config_path: str, store: HubStore):
                         raise ValueError("SMTP 未启用")
                     send_email(smtp, "[VPS流量监控] 测试邮件", "这是一封测试邮件，说明 SMTP 配置可用。")
                     self.send_json(200, {"ok": True})
+                elif parsed.path == "/api/upgrade":
+                    self.require_admin()
+                    trigger_upgrade()
+                    self.send_json(200, {"ok": True, "message": "升级任务已启动，Hub 即将重启。"})
                 elif parsed.path == "/api/nodes":
                     self.require_admin()
                     name = str(data.get("name", "")).strip()

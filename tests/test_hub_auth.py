@@ -54,6 +54,7 @@ class TestHubAuthAndNodes(unittest.TestCase):
         token = self.store.add_node("vps1", threshold_bytes=123)
         public = self.store.overview(admin=False)
         self.assertNotIn("token", public["nodes"][0])
+        self.assertEqual(public["nodes"][0]["threshold_bytes"], 123)
         admin = self.store.overview(admin=True)
         self.assertEqual(admin["nodes"][0]["token"], token)
         self.assertEqual(admin["nodes"][0]["threshold_bytes"], 123)
