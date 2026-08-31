@@ -58,7 +58,6 @@ DEFAULTS = {
     "recovery_email_enabled": True,
     "dashboard_url": "",
     "hub_public_url": "",
-    "proxy_domain": "",
     "check_interval": 300,
     "offline_after_seconds": 300,
     "email_subject_prefix": "[VPS流量监控]",
@@ -78,11 +77,15 @@ DASHBOARD_HTML = """<!doctype html>
     header { padding:20px clamp(16px,4vw,42px) 14px; border-bottom:1px solid var(--line); background:var(--panel); }
     .top { max-width:1180px; margin:0 auto; display:flex; gap:14px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
     h1 { margin:0; font-size:24px; }
-    h2 { margin:24px 0 10px; font-size:18px; }
+    h2 { margin:20px 0 10px; font-size:18px; }
     .sub { color:var(--muted); font-size:12px; }
     .actions { display:flex; gap:8px; align-items:center; }
     main { width:min(1180px, calc(100% - 32px)); margin:18px auto 40px; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:14px; }
+    .tabs { display:flex; gap:8px; border-bottom:1px solid var(--line); margin:16px 0 14px; }
+    .tab { background:transparent; color:var(--muted); border:1px solid transparent; border-bottom:2px solid transparent; padding:8px 14px; font-weight:650; }
+    .tab.active { color:var(--text); border-bottom-color:var(--accent); }
+    .tabpane.hidden { display:none !important; }
     table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
     th, td { padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
     th { color:var(--muted); font-weight:650; }
@@ -138,7 +141,29 @@ DASHBOARD_HTML = """<!doctype html>
       <div class="message" id="loginMessage"></div>
     </section>
 
-    <section id="adminSection" class="hidden">
+    <nav id="tabs" class="tabs hidden">
+      <button class="tab active" data-tab="home">主页</button>
+      <button class="tab" data-tab="add">添加 VPS</button>
+      <button class="tab" data-tab="settings">设置</button>
+    </nav>
+
+    <section id="homeSection" class="tabpane">
+      <div class="form" style="grid-template-columns:200px 1fr; margin-bottom:10px;">
+        <label>分组筛选<select id="groupFilter"><option value="">全部</option></select></label>
+      </div>
+      <table>
+        <thead><tr><th>节点</th><th>状态</th><th>当前速率</th><th>本周期已用</th><th>近 7 日合计</th><th>阈值 / 预测</th><th>近 7 日趋势</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+
+      <h2>告警记录</h2>
+      <table>
+        <thead><tr><th>时间</th><th>节点</th><th>状态</th><th>预计总量</th><th>阈值</th><th>剩余天数</th><th>预计超限日</th></tr></thead>
+        <tbody id="alerts"></tbody>
+      </table>
+    </section>
+
+    <section id="addSection" class="tabpane hidden">
       <div class="panel">
         <h2 id="nodeFormTitle">添加 VPS</h2>
         <div class="form">
@@ -168,7 +193,9 @@ DASHBOARD_HTML = """<!doctype html>
           <tbody id="nodeAdmin"></tbody>
         </table>
       </div>
+    </section>
 
+    <section id="settingsSection" class="tabpane hidden">
       <div class="panel">
         <h2>SMTP 邮件设置</h2>
         <div class="form">
@@ -191,13 +218,6 @@ DASHBOARD_HTML = """<!doctype html>
       </div>
 
       <div class="panel">
-        <h2>在线升级</h2>
-        <div class="sub">点击升级会从 GitHub 拉取最新代码并自动重启 Hub，配置与流量数据不会丢失。</div>
-        <div style="margin-top:8px;"><button id="upgradeBtn">升级到最新版</button></div>
-        <div class="message" id="upgradeMessage"></div>
-      </div>
-
-      <div class="panel">
         <h2>修改管理员密码</h2>
         <div class="form" style="grid-template-columns:200px 200px auto;">
           <label>当前密码<input id="pCurrent" type="password" autocomplete="current-password"></label>
@@ -208,44 +228,12 @@ DASHBOARD_HTML = """<!doctype html>
       </div>
 
       <div class="panel">
-        <h2>流量明细（小时）</h2>
-        <div class="form" style="grid-template-columns:220px auto auto;">
-          <label>选择节点<select id="detailNode"></select></label>
-          <button id="detailLoad" class="secondary">查看小时明细</button>
-          <button id="csvDownload" class="secondary">导出 CSV（近 7 日）</button>
-        </div>
-        <div style="margin-top:10px; overflow:auto; max-height:360px;">
-          <table><thead><tr><th>小时</th><th>下行</th><th>上行</th><th>合计</th></tr></thead><tbody id="hourlyBody"></tbody></table>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h2>HTTPS 反代配置</h2>
-        <div class="form" style="grid-template-columns:260px auto auto auto;">
-          <label>你的域名<input id="proxyDomain" placeholder="例如 monitor.example.com"></label>
-          <button id="proxySave">保存并启用 HTTPS</button>
-          <button id="genCaddy" class="secondary">生成 Caddy 配置</button>
-          <button id="copyProxy" class="secondary">复制配置</button>
-        </div>
-        <div class="message" id="proxyMessage"></div>
-        <div class="cmd" id="proxyCmd" style="margin-top:10px;"></div>
-        <div class="sub">保存后会自动安装 Caddy 并为该域名签发 HTTPS 证书；请确保域名已解析到本机、80/443 端口已开放。</div>
+        <h2>在线升级</h2>
+        <div class="sub">点击升级会从 GitHub 拉取最新代码并自动重启 Hub，配置与流量数据不会丢失。</div>
+        <div style="margin-top:8px;"><button id="upgradeBtn">升级到最新版</button></div>
+        <div class="message" id="upgradeMessage"></div>
       </div>
     </section>
-
-    <div class="form" style="grid-template-columns:200px 1fr; margin-bottom:10px;">
-      <label>分组筛选<select id="groupFilter"><option value="">全部</option></select></label>
-    </div>
-    <table>
-      <thead><tr><th>节点</th><th>状态</th><th>当前速率</th><th>本周期已用</th><th>近 7 日合计</th><th>阈值 / 预测</th><th>近 7 日趋势</th></tr></thead>
-      <tbody id="tbody"></tbody>
-    </table>
-
-    <h2>告警记录</h2>
-    <table>
-      <thead><tr><th>时间</th><th>节点</th><th>状态</th><th>预计总量</th><th>阈值</th><th>剩余天数</th><th>预计超限日</th></tr></thead>
-      <tbody id="alerts"></tbody>
-    </table>
   </main>
 
   <script>
@@ -262,12 +250,30 @@ DASHBOARD_HTML = """<!doctype html>
       if (!r.ok) throw new Error(d.error || '请求失败');
       return d;
     }
+    async function copyText(text) {
+      try { await navigator.clipboard.writeText(text); return true; } catch(e) {}
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch(e) { return false; }
+    }
+    function showTab(name) {
+      document.querySelectorAll('.tabpane').forEach(el => el.classList.add('hidden'));
+      const sec = document.getElementById(name + 'Section');
+      if (sec) sec.classList.remove('hidden');
+      document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+    }
     function setAdmin(admin) {
       S.admin = admin;
-      $('adminSection').classList.toggle('hidden', !admin);
+      $('tabs').classList.toggle('hidden', !admin);
       $('loginToggle').classList.toggle('hidden', admin);
       $('logout').classList.toggle('hidden', !admin);
       if (admin) $('loginPanel').classList.add('hidden');
+      if (!admin) showTab('home');
     }
     function bloodBar(n) {
       const th = n.threshold_bytes || 0;
@@ -297,7 +303,7 @@ DASHBOARD_HTML = """<!doctype html>
         const memPct = n.mem_total_bytes ? Math.round((n.mem_used_bytes||0)/n.mem_total_bytes*100) : 0;
         const metricsLine = `CPU ${n.cpu_percent||0}% · 内存 ${memPct}% · 负载 ${n.load1||0}`;
         const groupBadge = n.group ? `<span class="badge" style="background:rgba(52,182,184,.14);color:var(--accent)">${esc(n.group)}</span> ` : '';
-        return `<tr><td><strong>${esc(n.name)}</strong>${groupBadge}<div class="sub">${esc(n.host)}</div><div class="sub">${metricsLine}</div></td><td><span class="dot ${n.online?'on':'off'}"></span>${n.online?'在线':'离线'}</td><td>${fmt(rateTotal)}/s</td><td>${fmt(n.current_total_bytes)}</td><td>${fmt(total7)}</td><td>${predCell(n)}</td><td><div class="bars">${bars}</div><div class="iface">${ifaces||'—'}</div></td></tr>`;
+        return `<tr><td><strong>${esc(n.name)}</strong>${groupBadge}<div class="sub">${esc(n.host)}</div><div class="sub">重置日 每月${n.reset_day}日 · ${metricsLine}</div></td><td><span class="dot ${n.online?'on':'off'}"></span>${n.online?'在线':'离线'}</td><td>${fmt(rateTotal)}/s</td><td>${fmt(n.current_total_bytes)}</td><td>${fmt(total7)}</td><td>${predCell(n)}</td><td><div class="bars">${bars}</div><div class="iface">${ifaces||'—'}</div></td></tr>`;
       }).join('');
     }
     function adminRows(nodes) {
@@ -334,11 +340,6 @@ DASHBOARD_HTML = """<!doctype html>
       const filtered = sel ? S.nodes.filter(n=>(n.group||'')===sel) : S.nodes;
       $('tbody').innerHTML = nodeRows(filtered) || '<tr><td colspan="7">暂无节点</td></tr>';
     }
-    function fillDetailNodes() {
-      const prev = $('detailNode').value;
-      $('detailNode').innerHTML = S.nodes.map(n=>`<option value="${n.id}">${esc(n.name)}</option>`).join('');
-      if ([...$('detailNode').options].some(o=>o.value===prev)) $('detailNode').value = prev;
-    }
     async function load() {
       try {
         const data = await api('/api/status');
@@ -346,20 +347,14 @@ DASHBOARD_HTML = """<!doctype html>
         S.email_subject_prefix = data.email_subject_prefix || '[VPS流量监控]';
         S.email_footer_text = data.email_footer_text || '';
         S.offline_after_seconds = data.offline_after_seconds || 300;
-        S.port = data.port || 8898;
-        S.proxy_domain = data.proxy_domain || '';
         setAdmin(!!data.admin);
         $('updated').textContent = `已更新 ${new Date(data.now*1000).toLocaleTimeString()}`;
         renderPublic();
         $('alerts').innerHTML = alertRows(S.alerts) || '<tr><td colspan="7">暂无告警</td></tr>';
-        if (S.admin) { $('nodeAdmin').innerHTML = adminRows(S.nodes) || '<tr><td colspan="8">暂无节点</td></tr>'; fillSmtp(); fillDetailNodes(); $('proxyDomain').value = S.proxy_domain; }
+        if (S.admin) { $('nodeAdmin').innerHTML = adminRows(S.nodes) || '<tr><td colspan="8">暂无节点</td></tr>'; fillSmtp(); }
       } catch (e) { $('updated').textContent = '连接失败'; }
     }
     function showCommand(cmd) { $('installCmd').textContent = cmd; $('copyMsg').textContent=''; }
-    $('copyCmd').onclick = async () => {
-      try { await navigator.clipboard.writeText($('installCmd').textContent); $('copyMsg').textContent = '已复制'; }
-      catch (e) { $('copyMsg').textContent = '复制失败，请手动全选复制'; }
-    };
     function resetNodeForm() {
       S.editingId = null; $('nodeFormTitle').textContent = '添加 VPS'; $('nodeSave').textContent = '添加';
       $('nodeCancel').classList.add('hidden');
@@ -369,22 +364,27 @@ DASHBOARD_HTML = """<!doctype html>
       const n = S.nodes.find(x => x.id === id); if (!n) return;
       S.editingId = id; $('nodeFormTitle').textContent = `编辑节点 #${id}`; $('nodeSave').textContent = '保存修改'; $('nodeCancel').classList.remove('hidden');
       $('nName').value=n.name||''; $('nHost').value=n.host||''; $('nGroup').value=n.group||''; $('nResetDay').value=n.reset_day; $('nThreshold').value=gb(n.threshold_bytes); $('nEmail').value=n.alert_email||'';
-      $('nodeMessage').textContent='';
+      $('nodeMessage').textContent=''; showTab('add');
     };
     window.showToken = async id => {
-      try { const r = await api(`/api/nodes/${id}/token`, {}); showCommand(r.command); } catch(e) { alert(e.message); }
+      try { const r = await api(`/api/nodes/${id}/token`, {}); showCommand(r.command); showTab('add'); } catch(e) { alert(e.message); }
     };
     window.delNode = async id => {
       if (!confirm('确定删除该节点及其历史数据吗？')) return;
       try { await api(`/api/nodes/${id}/delete`, {}); resetNodeForm(); load(); } catch(e) { alert(e.message); }
     };
 
+    document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
     $('loginToggle').onclick = () => $('loginPanel').classList.toggle('hidden');
     $('loginBtn').onclick = async () => {
-      try { await api('/api/login', {username:$('username').value, password:$('password').value}); $('loginMessage').textContent=''; $('password').value=''; load(); }
+      try { await api('/api/login', {username:$('username').value, password:$('password').value}); $('loginMessage').textContent=''; $('password').value=''; showTab('home'); load(); }
       catch(e) { $('loginMessage').textContent = e.message; }
     };
-    $('logout').onclick = async () => { await api('/api/logout', {}); load(); };
+    $('logout').onclick = async () => { await api('/api/logout', {}); showTab('home'); load(); };
+    $('copyCmd').onclick = async () => {
+      const ok = await copyText($('installCmd').textContent);
+      $('copyMsg').textContent = ok ? '已复制' : '复制失败，请手动全选复制';
+    };
     $('nodeSave').onclick = async () => {
       const body = { name:$('nName').value.trim(), host:$('nHost').value.trim(), group:$('nGroup').value.trim(), reset_day:Number($('nResetDay').value), threshold_gb:Number($('nThreshold').value||0), email:$('nEmail').value.trim() };
       try {
@@ -394,6 +394,7 @@ DASHBOARD_HTML = """<!doctype html>
       } catch(e) { $('nodeMessage').textContent = e.message; }
     };
     $('nodeCancel').onclick = () => { resetNodeForm(); $('nodeMessage').textContent=''; };
+    $('groupFilter').onchange = () => renderPublic();
     $('smtpSave').onclick = async () => {
       try { await api('/api/smtp', { enabled:$('sEnabled').checked, host:$('sHost').value.trim(), port:Number($('sPort').value), username:$('sUsername').value.trim(), password:$('sPassword').value, from_addr:$('sFrom').value.trim(), to_addrs:$('sTo').value, use_ssl:$('sSsl').checked, use_starttls:$('sStarttls').checked, email_subject_prefix:$('sPrefix').value.trim(), email_footer_text:$('sFooter').value, offline_after_seconds:Number($('sOffline').value) }); $('smtpMessage').textContent='已保存'; $('sPassword').value=''; load(); }
       catch(e) { $('smtpMessage').textContent = e.message; }
@@ -402,49 +403,22 @@ DASHBOARD_HTML = """<!doctype html>
       try { await api('/api/test-email', {}); $('smtpMessage').textContent='测试邮件已发送'; }
       catch(e) { $('smtpMessage').textContent = e.message; }
     };
-    $('upgradeBtn').onclick = async () => {
-      if (!confirm('确定要在线升级 Hub 吗？升级会自动重启服务。')) return;
-      try { const r = await api('/api/upgrade', {}); $('upgradeMessage').textContent = r.message || '升级任务已启动'; }
-      catch(e) { $('upgradeMessage').textContent = e.message; }
-    };
-    $('groupFilter').onchange = () => renderPublic();
     $('passwordBtn').onclick = async () => {
       try { await api('/api/password', { current_password:$('pCurrent').value, new_password:$('pNew').value }); $('passwordMessage').textContent='密码已修改'; $('pCurrent').value=''; $('pNew').value=''; }
       catch(e) { $('passwordMessage').textContent = e.message; }
     };
-    $('detailLoad').onclick = async () => {
-      const id = $('detailNode').value; if (!id) return;
-      try {
-        const r = await api(`/api/nodes/${id}/hourly`);
-        $('hourlyBody').innerHTML = (r.hours||[]).map(h=>`<tr><td>${esc(h.hour)}</td><td>${fmt(h.rx_bytes)}</td><td>${fmt(h.tx_bytes)}</td><td>${fmt(h.total_bytes)}</td></tr>`).join('') || '<tr><td colspan="4">暂无小时数据</td></tr>';
-      } catch(e) { alert(e.message); }
-    };
-    $('csvDownload').onclick = () => {
-      const id = $('detailNode').value; if (!id) return;
-      window.location = `/api/nodes/${id}/csv`;
-    };
-    $('genCaddy').onclick = () => {
-      const d = $('proxyDomain').value.trim();
-      if (!d) { alert('请先填写域名'); return; }
-      $('proxyCmd').textContent = `${d} {
-    reverse_proxy 127.0.0.1:${S.port}
-}`;
-    };
-    $('copyProxy').onclick = async () => {
-      try { await navigator.clipboard.writeText($('proxyCmd').textContent); }
-      catch(e) { alert('复制失败'); }
-    };
-    $('proxySave').onclick = async () => {
-      const domain = $('proxyDomain').value.trim();
-      if (!domain) { $('proxyMessage').textContent = '请先填写域名'; return; }
-      try { const r = await api('/api/proxy', { domain }); $('proxyMessage').textContent = r.message || '已保存并启动 HTTPS 配置'; }
-      catch(e) { $('proxyMessage').textContent = e.message; }
+    $('upgradeBtn').onclick = async () => {
+      if (!confirm('确定要在线升级 Hub 吗？升级会自动重启服务。')) return;
+      try { const r = await api('/api/upgrade', {}); $('upgradeMessage').textContent = r.message || '升级任务已启动'; }
+      catch(e) { $('upgradeMessage').textContent = e.message; }
     };
     load(); setInterval(load, 5000);
   </script>
 </body>
 </html>
 """
+
+
 
 
 
@@ -567,46 +541,6 @@ def trigger_upgrade() -> None:
         f"'curl -fsSL {script} -o /tmp/vps-traffic-monitor-install.sh "
         "&& bash /tmp/vps-traffic-monitor-install.sh --action update --role hub'"
     )
-    subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-
-
-def trigger_proxy_setup(domain: str, port: int) -> None:
-    """安装/配置 Caddy 并为域名签发 HTTPS 证书。在服务 cgroup 之外异步执行。"""
-    script = r"""#!/bin/bash
-set -euo pipefail
-DOMAIN="$1"
-PORT="$2"
-if ! command -v caddy >/dev/null 2>&1; then
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update -y
-    apt-get install -y caddy
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y 'dnf-command(copr)'
-    dnf copr enable -y @caddy/caddy
-    dnf install -y caddy
-  else
-    echo "Unsupported distribution" >&2
-    exit 1
-  fi
-fi
-mkdir -p /etc/caddy
-cat > /etc/caddy/Caddyfile <<EOF
-${DOMAIN} {
-    reverse_proxy 127.0.0.1:${PORT}
-}
-EOF
-systemctl enable caddy
-systemctl restart caddy
-"""
-    path = "/tmp/vps-caddy-setup.sh"
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(script)
-    cmd = f"systemd-run --no-block /bin/bash {path} {domain} {port}"
     subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -1269,32 +1203,11 @@ def make_handler(config_path: str, store: HubStore):
                 if admin:
                     data["smtp"] = self.smtp_view()
                     data["hub_public_url"] = self.cfg().get("hub_public_url", "")
-                    data["proxy_domain"] = self.cfg().get("proxy_domain", "")
                     data["port"] = self.cfg().get("port")
                     data["offline_after_seconds"] = self.cfg().get("offline_after_seconds", 300)
                     data["email_subject_prefix"] = self.cfg().get("email_subject_prefix", "[VPS流量监控]")
                     data["email_footer_text"] = self.cfg().get("email_footer_text", "")
                 self.send_json(200, data)
-            elif parsed.path.startswith("/api/nodes/"):
-                if not self.is_admin():
-                    self.send_json(403, {"error": "login required"})
-                    return
-                match = re.fullmatch(r"/api/nodes/(\d+)/(hourly|csv)", parsed.path)
-                if not match:
-                    self.send_error(404)
-                    return
-                node_id = int(match.group(1))
-                kind = match.group(2)
-                if kind == "hourly":
-                    self.send_json(200, {"hours": store.hourly_usage(node_id, 24)})
-                else:
-                    csv_text = store.csv_export(node_id, 7).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/csv; charset=utf-8")
-                    self.send_header("Content-Disposition", f'attachment; filename="node_{node_id}_traffic.csv"')
-                    self.send_header("Content-Length", str(len(csv_text)))
-                    self.end_headers()
-                    self.wfile.write(csv_text)
             elif parsed.path == "/":
                 body = DASHBOARD_HTML.encode("utf-8")
                 self.send_response(200)
@@ -1349,15 +1262,6 @@ def make_handler(config_path: str, store: HubStore):
                     config["admin_password_hash"] = hash_password(new_password)
                     save_config(config_path, config)
                     self.send_json(200, {"ok": True})
-                elif parsed.path == "/api/proxy":
-                    self.require_admin()
-                    domain = str(data.get("domain", "")).strip().lower()
-                    if not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", domain):
-                        raise ValueError("域名格式不正确")
-                    config["proxy_domain"] = domain
-                    save_config(config_path, config)
-                    trigger_proxy_setup(domain, int(config.get("port", DEFAULT_PORT)))
-                    self.send_json(200, {"ok": True, "message": "HTTPS 配置任务已启动，Caddy 将自动安装并签发证书。"})
                 elif parsed.path == "/api/test-email":
                     self.require_admin()
                     smtp = config.get("smtp") or {}
