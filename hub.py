@@ -58,6 +58,7 @@ DEFAULTS = {
     "recovery_email_enabled": True,
     "dashboard_url": "",
     "hub_public_url": "",
+    "proxy_domain": "",
     "check_interval": 300,
     "offline_after_seconds": 300,
     "email_subject_prefix": "[VPS流量监控]",
@@ -220,13 +221,15 @@ DASHBOARD_HTML = """<!doctype html>
 
       <div class="panel">
         <h2>HTTPS 反代配置</h2>
-        <div class="form" style="grid-template-columns:260px auto auto;">
+        <div class="form" style="grid-template-columns:260px auto auto auto;">
           <label>你的域名<input id="proxyDomain" placeholder="例如 monitor.example.com"></label>
+          <button id="proxySave">保存并启用 HTTPS</button>
           <button id="genCaddy" class="secondary">生成 Caddy 配置</button>
           <button id="copyProxy" class="secondary">复制配置</button>
         </div>
+        <div class="message" id="proxyMessage"></div>
         <div class="cmd" id="proxyCmd" style="margin-top:10px;"></div>
-        <div class="sub">生成后请按下方说明安装对应反代软件并加载配置。</div>
+        <div class="sub">保存后会自动安装 Caddy 并为该域名签发 HTTPS 证书；请确保域名已解析到本机、80/443 端口已开放。</div>
       </div>
     </section>
 
@@ -344,11 +347,12 @@ DASHBOARD_HTML = """<!doctype html>
         S.email_footer_text = data.email_footer_text || '';
         S.offline_after_seconds = data.offline_after_seconds || 300;
         S.port = data.port || 8898;
+        S.proxy_domain = data.proxy_domain || '';
         setAdmin(!!data.admin);
         $('updated').textContent = `已更新 ${new Date(data.now*1000).toLocaleTimeString()}`;
         renderPublic();
         $('alerts').innerHTML = alertRows(S.alerts) || '<tr><td colspan="7">暂无告警</td></tr>';
-        if (S.admin) { $('nodeAdmin').innerHTML = adminRows(S.nodes) || '<tr><td colspan="8">暂无节点</td></tr>'; fillSmtp(); fillDetailNodes(); }
+        if (S.admin) { $('nodeAdmin').innerHTML = adminRows(S.nodes) || '<tr><td colspan="8">暂无节点</td></tr>'; fillSmtp(); fillDetailNodes(); $('proxyDomain').value = S.proxy_domain; }
       } catch (e) { $('updated').textContent = '连接失败'; }
     }
     function showCommand(cmd) { $('installCmd').textContent = cmd; $('copyMsg').textContent=''; }
@@ -429,6 +433,12 @@ DASHBOARD_HTML = """<!doctype html>
     $('copyProxy').onclick = async () => {
       try { await navigator.clipboard.writeText($('proxyCmd').textContent); }
       catch(e) { alert('复制失败'); }
+    };
+    $('proxySave').onclick = async () => {
+      const domain = $('proxyDomain').value.trim();
+      if (!domain) { $('proxyMessage').textContent = '请先填写域名'; return; }
+      try { const r = await api('/api/proxy', { domain }); $('proxyMessage').textContent = r.message || '已保存并启动 HTTPS 配置'; }
+      catch(e) { $('proxyMessage').textContent = e.message; }
     };
     load(); setInterval(load, 5000);
   </script>
@@ -557,6 +567,46 @@ def trigger_upgrade() -> None:
         f"'curl -fsSL {script} -o /tmp/vps-traffic-monitor-install.sh "
         "&& bash /tmp/vps-traffic-monitor-install.sh --action update --role hub'"
     )
+    subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def trigger_proxy_setup(domain: str, port: int) -> None:
+    """安装/配置 Caddy 并为域名签发 HTTPS 证书。在服务 cgroup 之外异步执行。"""
+    script = r"""#!/bin/bash
+set -euo pipefail
+DOMAIN="$1"
+PORT="$2"
+if ! command -v caddy >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update -y
+    apt-get install -y caddy
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y 'dnf-command(copr)'
+    dnf copr enable -y @caddy/caddy
+    dnf install -y caddy
+  else
+    echo "Unsupported distribution" >&2
+    exit 1
+  fi
+fi
+mkdir -p /etc/caddy
+cat > /etc/caddy/Caddyfile <<EOF
+${DOMAIN} {
+    reverse_proxy 127.0.0.1:${PORT}
+}
+EOF
+systemctl enable caddy
+systemctl restart caddy
+"""
+    path = "/tmp/vps-caddy-setup.sh"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(script)
+    cmd = f"systemd-run --no-block /bin/bash {path} {domain} {port}"
     subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -1219,6 +1269,7 @@ def make_handler(config_path: str, store: HubStore):
                 if admin:
                     data["smtp"] = self.smtp_view()
                     data["hub_public_url"] = self.cfg().get("hub_public_url", "")
+                    data["proxy_domain"] = self.cfg().get("proxy_domain", "")
                     data["port"] = self.cfg().get("port")
                     data["offline_after_seconds"] = self.cfg().get("offline_after_seconds", 300)
                     data["email_subject_prefix"] = self.cfg().get("email_subject_prefix", "[VPS流量监控]")
@@ -1298,6 +1349,15 @@ def make_handler(config_path: str, store: HubStore):
                     config["admin_password_hash"] = hash_password(new_password)
                     save_config(config_path, config)
                     self.send_json(200, {"ok": True})
+                elif parsed.path == "/api/proxy":
+                    self.require_admin()
+                    domain = str(data.get("domain", "")).strip().lower()
+                    if not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", domain):
+                        raise ValueError("域名格式不正确")
+                    config["proxy_domain"] = domain
+                    save_config(config_path, config)
+                    trigger_proxy_setup(domain, int(config.get("port", DEFAULT_PORT)))
+                    self.send_json(200, {"ok": True, "message": "HTTPS 配置任务已启动，Caddy 将自动安装并签发证书。"})
                 elif parsed.path == "/api/test-email":
                     self.require_admin()
                     smtp = config.get("smtp") or {}
