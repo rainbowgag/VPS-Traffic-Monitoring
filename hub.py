@@ -303,7 +303,7 @@ DASHBOARD_HTML = """<!doctype html>
         const memPct = n.mem_total_bytes ? Math.round((n.mem_used_bytes||0)/n.mem_total_bytes*100) : 0;
         const metricsLine = `CPU ${n.cpu_percent||0}% · 内存 ${memPct}% · 负载 ${n.load1||0}`;
         const groupBadge = n.group ? `<span class="badge" style="background:rgba(52,182,184,.14);color:var(--accent)">${esc(n.group)}</span> ` : '';
-        return `<tr><td><strong>${esc(n.name)}</strong>${groupBadge}<div class="sub">${esc(n.host)}</div><div class="sub">重置日 每月${n.reset_day}日 · ${metricsLine}</div></td><td><span class="dot ${n.online?'on':'off'}"></span>${n.online?'在线':'离线'}</td><td>${fmt(rateTotal)}/s</td><td>${fmt(n.current_total_bytes)}</td><td>${fmt(total7)}</td><td>${predCell(n)}</td><td><div class="bars">${bars}</div><div class="iface">${ifaces||'—'}</div></td></tr>`;
+        return `<tr><td><strong>${esc(n.name)}</strong>${groupBadge}<span class="badge" style="background:rgba(159,176,202,.16);color:var(--muted)">每月${n.reset_day}日重置</span> <div class="sub">${esc(n.host)}</div><div class="sub">${metricsLine}</div></td><td><span class="dot ${n.online?'on':'off'}"></span>${n.online?'在线':'离线'}</td><td>${fmt(rateTotal)}/s</td><td>${fmt(n.current_total_bytes)}</td><td>${fmt(total7)}</td><td>${predCell(n)}</td><td><div class="bars">${bars}</div><div class="iface">${ifaces||'—'}</div></td></tr>`;
       }).join('');
     }
     function adminRows(nodes) {
